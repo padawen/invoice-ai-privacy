@@ -1,0 +1,11 @@
+Flask==3.0.0
+Flask-CORS==4.0.0
+requests==2.31.0
+Pillow==10.1.0
+pytesseract==0.3.10
+pdf2image==1.17.0
+python-dotenv==1.0.0
+gunicorn==21.2.0
+opencv-python-headless==4.8.1.78
+numpy==1.24.3
+json-repair==0.7.0

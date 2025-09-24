@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# Flask
+instance/
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# Logs
+*.log
+logs/
+
+# Models (large files)
+models/*.bin
+models/*.gguf
+models/*.safetensors
+
+# Test files
+test_invoices/
+sample_data/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OCR temporary files
+*.png
+*.jpg
+*.jpeg
+temp_images/
