@@ -93,7 +93,7 @@ RUN echo '#!/bin/bash' > /app/start.sh && \
     echo 'done' >> /app/start.sh && \
     echo '' >> /app/start.sh && \
     echo '# Check if model exists and pull if necessary' >> /app/start.sh && \
-    echo 'MODEL_NAME=${OLLAMA_MODEL:-phi3:mini}' >> /app/start.sh && \
+    echo 'MODEL_NAME=${OLLAMA_MODEL:-llama3.2:1b}' >> /app/start.sh && \
     echo 'echo "Checking for model: $MODEL_NAME"' >> /app/start.sh && \
     echo 'if ! /usr/local/bin/ollama list | grep -q "$MODEL_NAME"; then' >> /app/start.sh && \
     echo '  echo "Pulling model: $MODEL_NAME (this may take a while...)"' >> /app/start.sh && \

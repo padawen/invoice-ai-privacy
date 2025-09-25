@@ -13,7 +13,7 @@ class Config:
 
     # Ollama settings
     OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama2:7b')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
     OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 120))  # 2 minutes
 
     # OCR settings
@@ -43,15 +43,15 @@ class Config:
 
 class DevelopmentConfig(Config):
     DEBUG = True
-    OLLAMA_MODEL = 'phi3:mini'  # Smaller model for development
+    OLLAMA_MODEL = 'llama3.2:1b'  # Ultra-small model for 1GB RAM
 
 class ProductionConfig(Config):
     DEBUG = False
-    OLLAMA_MODEL = 'phi3:mini'  # Optimized for 1GB RAM instances
+    OLLAMA_MODEL = 'llama3.2:1b'  # Optimized for 1GB RAM instances
 
 class TestingConfig(Config):
     TESTING = True
-    OLLAMA_MODEL = 'phi3:mini'  # Fast model for testing
+    OLLAMA_MODEL = 'llama3.2:1b'  # Fast model for testing
 
 # Config mapping
 config = {
