@@ -80,13 +80,13 @@ PORT=5000
 
 **Typical Processing Times:**
 - OCR (Pytesseract): 2-5 seconds
-- LLM (Llama 2 7B): 10-30 seconds
-- Total: 15-35 seconds per invoice
+- LLM (Phi3 Mini): 5-15 seconds
+- Total: 10-25 seconds per invoice
 
 **Resource Requirements:**
-- RAM: 6-8GB during processing
-- CPU: 2+ cores recommended
-- Storage: 10GB+ (models + temp files)
+- RAM: 1GB+ (optimized for Oracle Free Tier E2.1.Micro)
+- CPU: 1+ cores (ARM or x86)
+- Storage: 5GB+ (models + temp files)
 
 ## 🆚 vs OpenAI Version
 

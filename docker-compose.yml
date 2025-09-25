@@ -9,12 +9,12 @@ services:
       - "11434:11434"  # Ollama API
     environment:
       - OLLAMA_HOST=localhost:11434
-      - OLLAMA_MODEL=phi3:mini  # Smaller model for development
-      - DEBUG=true
+      - OLLAMA_MODEL=phi3:mini  # Optimized for 1GB RAM instances
+      - DEBUG=false
       - PORT=5000
       - HOST=0.0.0.0
       - OCR_LANGUAGE=eng
-      - MAX_FILE_SIZE=52428800  # 50MB
+      - MAX_FILE_SIZE=20971520  # 20MB (reduced for low-memory)
       - LOG_LEVEL=INFO
     volumes:
       - ollama_data:/root/.ollama  # Persist Ollama models

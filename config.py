@@ -47,7 +47,7 @@ class DevelopmentConfig(Config):
 
 class ProductionConfig(Config):
     DEBUG = False
-    OLLAMA_MODEL = 'llama2:7b'  # Full model for production
+    OLLAMA_MODEL = 'phi3:mini'  # Optimized for 1GB RAM instances
 
 class TestingConfig(Config):
     TESTING = True

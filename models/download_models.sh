@@ -15,11 +15,11 @@ fi
 echo "✅ Ollama is running"
 
 # Default models to download
-DEVELOPMENT_MODEL="phi3:mini"      # ~2GB, fast for development
-PRODUCTION_MODEL="llama2:7b"       # ~4GB, better accuracy
+DEVELOPMENT_MODEL="phi3:mini"      # ~1.5GB, optimized for 1GB RAM instances
+PRODUCTION_MODEL="phi3:mini"       # ~1.5GB, fits in Oracle Free Tier
 
 # Check environment or use default
-MODEL_NAME=${OLLAMA_MODEL:-$DEVELOPMENT_MODEL}
+MODEL_NAME=${OLLAMA_MODEL:-$PRODUCTION_MODEL}
 
 echo "📦 Downloading model: $MODEL_NAME"
 
