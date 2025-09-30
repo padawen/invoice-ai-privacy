@@ -1,3 +1,8 @@
+# Environment variables (NEVER commit these!)
+.env
+.env.local
+.env.production
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,6 +21,7 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -24,42 +30,28 @@ MANIFEST
 
 # Virtual environments
 venv/
-env/
 ENV/
-
-# Environment files
-.env
-.env.local
-
-# Flask
-instance/
-
-# Temporary files
-/tmp/
-*.tmp
-*.temp
+env/
+.venv/
 
 # Logs
 *.log
 logs/
 
-# Models (large files)
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Models (can be large)
 models/*.bin
+models/*.model
 models/*.gguf
-models/*.safetensors
 
-# Test files
-test_invoices/
-sample_data/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Test coverage
+.coverage
+.pytest_cache/
+htmlcov/
 
 # IDE
 .vscode/
@@ -67,16 +59,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# Docker
-.dockerignore
+# OS
+.DS_Store
+Thumbs.db
 
-# Pytest
-.pytest_cache/
-.coverage
-htmlcov/
-
-# OCR temporary files
+# Uploaded files
+uploads/
+*.pdf
 *.png
 *.jpg
 *.jpeg
-temp_images/

@@ -13,8 +13,8 @@ class Config:
 
     # Ollama settings
     OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
-    OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 120))  # 2 minutes
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')
+    OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes for Phi-3.5
 
     # OCR settings
     OCR_LANGUAGE = os.getenv('OCR_LANGUAGE', 'eng')
@@ -24,7 +24,7 @@ class Config:
     # Processing settings
     MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', 50 * 1024 * 1024))  # 50MB
     ALLOWED_EXTENSIONS = {'pdf'}
-    TEMP_DIR = os.getenv('TEMP_DIR', '/tmp/invoice_processing')
+    TEMP_DIR = os.getenv('TEMP_DIR', os.path.join(os.getcwd(), 'temp'))
 
     # Model settings
     MODELS_DIR = os.getenv('MODELS_DIR', './models')
@@ -43,15 +43,15 @@ class Config:
 
 class DevelopmentConfig(Config):
     DEBUG = True
-    OLLAMA_MODEL = 'llama3.2:1b'  # Ultra-small model for 1GB RAM
+    OLLAMA_MODEL = 'llama3.2:3b'  # Fast model for development
 
 class ProductionConfig(Config):
     DEBUG = False
-    OLLAMA_MODEL = 'llama3.2:1b'  # Optimized for 1GB RAM instances
+    OLLAMA_MODEL = 'llama3.2:3b'  # Fast model for production
 
 class TestingConfig(Config):
     TESTING = True
-    OLLAMA_MODEL = 'llama3.2:1b'  # Fast model for testing
+    OLLAMA_MODEL = 'llama3.2:3b'  # Consistent model for testing
 
 # Config mapping
 config = {

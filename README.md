@@ -1,145 +1,157 @@
-# Invoice AI Privacy - On-Premise Processing
+# Invoice AI Privacy
 
-Privacy-focused invoice processing using Pytesseract OCR and Ollama LLM. Complete alternative to cloud-based AI services.
+A completely local invoice processing service using Ollama (Mistral 7B Instruct) for AI-powered data extraction. No cloud dependencies, full privacy.
 
-## 🔒 Privacy Features
+## Features
 
-- **Zero external API calls** - everything runs on-premise
-- **No data leakage** - invoices never leave your infrastructure
-- **GDPR compliant** - full data sovereignty
-- **Open source** - transparent and auditable
+- **🔒 Complete Privacy**: Everything runs locally, no data leaves your machine
+- **⚡ Fast Processing**: Mistral 7B Instruct model with multilingual support (Hungarian/English)
+- **📊 Real-time Progress**: Live progress tracking with cancellation support
+- **📄 PDF Support**: OCR-based text extraction from PDF invoices
+- **🔑 Secure API**: Bearer token authentication for production use
+- **🚀 One-Click Setup**: Automated startup script handles everything
 
-## 🏗️ Architecture
+## Quick Start
 
-```
-PDF Invoice → Pytesseract OCR → Raw Text → Ollama LLM → Structured JSON
-```
+1. **Prerequisites**
+   ```bash
+   # Install Ollama
+   # Windows: Download from https://ollama.ai/download/windows
+   # Verify installation
+   ollama --version
 
-**Single Docker Container:**
-- Flask API server
-- Pytesseract for OCR processing
-- Ollama with Llama 2 7B model
-- Compatible API interface
+   # Install Python 3.9+
+   python --version
+   ```
 
-## 🚀 Quick Start
+2. **Setup Environment**
+   ```bash
+   # Clone and setup
+   git clone <your-repo>
+   cd invoice-ai-privacy
 
-### Prerequisites
-- Docker & Docker Compose
-- 8GB+ RAM (16GB recommended)
-- ARM64 or x86_64 architecture
+   # Copy environment template
+   copy .env.example .env
+   # Edit .env and set your API_KEY
+   ```
 
-### Local Development
-```bash
-git clone https://github.com/your-username/invoice-ai-privacy.git
-cd invoice-ai-privacy
-docker-compose up --build
-```
+3. **Run the Service**
+   ```bash
+   # Windows: Just double-click or run
+   start-native.bat
 
-### Oracle Cloud Deployment
-```bash
-# Run setup script
-./deployment/oracle_setup.sh
+   # The script will:
+   # - Check/start Ollama
+   # - Download Mistral 7B Instruct model
+   # - Setup Python environment
+   # - Start ngrok tunnel
+   # - Launch Flask API
+   ```
 
-# Build and deploy
-docker build -t invoice-ai-privacy .
-docker run -p 5000:5000 invoice-ai-privacy
-```
-
-## 📋 API Documentation
-
-### Process Invoice
-```
-POST /process-invoice
-Content-Type: multipart/form-data
-
-Body:
-- file: PDF file (required)
-- processor: "privacy" (optional)
-
-Response: Same JSON structure as OpenAI version
-```
+## API Usage
 
 ### Health Check
-```
-GET /health
-Response: {"status": "healthy", "model": "loaded"}
-```
-
-## 🔧 Configuration
-
-Environment variables:
 ```bash
-OLLAMA_HOST=localhost:11434
-MODEL_NAME=llama2:7b
-OCR_LANGUAGE=eng
-DEBUG=false
-PORT=5000
+curl http://localhost:5000/health
 ```
 
-## 📊 Performance
-
-**Typical Processing Times:**
-- OCR (Pytesseract): 2-5 seconds
-- LLM (Phi3 Mini): 5-15 seconds
-- Total: 10-25 seconds per invoice
-
-**Resource Requirements:**
-- RAM: 1GB+ (optimized for Oracle Free Tier E2.1.Micro)
-- CPU: 1+ cores (ARM or x86)
-- Storage: 5GB+ (models + temp files)
-
-## 🆚 vs OpenAI Version
-
-| Feature | OpenAI | Privacy |
-|---------|--------|---------|
-| Data Privacy | ❌ External | ✅ On-premise |
-| Cost | $0.10-0.50/invoice | Free (hosting only) |
-| Speed | 2-5 seconds | 15-35 seconds |
-| Accuracy | High | Good (depends on model) |
-| Scalability | Unlimited | Hardware limited |
-
-## 🛠️ Development
-
-### Project Structure
-```
-├── app.py                 # Flask main application
-├── config.py              # Configuration management
-├── utils/
-│   ├── ocr.py            # Pytesseract wrapper
-│   ├── llm.py            # Ollama client
-│   └── processing.py     # Main pipeline
-├── models/
-│   └── download_models.sh
-├── tests/
-│   └── test_api.py
-└── deployment/
-    ├── oracle_setup.sh
-    └── docker-compose.oracle.yml
-```
-
-### Testing
+### Process Invoice
 ```bash
-# Unit tests
-python -m pytest tests/
-
-# Test with sample invoice
-curl -X POST -F "file=@tests/sample_invoices/test.pdf" \
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "file=@invoice.pdf" \
   http://localhost:5000/process-invoice
 ```
 
-## 📄 License
+## Configuration
 
-MIT License - See LICENSE file for details
+Edit `.env` file:
 
-## 🤝 Contributing
+```env
+# Security
+API_KEY=your_secure_api_key_here
 
-1. Fork the repository
-2. Create feature branch
-3. Add tests for new functionality
-4. Submit pull request
+# Ollama Settings
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_HOST=localhost:11434
 
-## 📞 Support
+# Processing
+MAX_FILE_SIZE=52428800  # 50MB
+OCR_LANGUAGE=eng
 
-- Issues: GitHub Issues
-- Documentation: /docs folder
-- Performance tuning: See deployment guide
+# Server
+PORT=5000
+HOST=0.0.0.0
+DEBUG=false
+```
+
+## Architecture
+
+```
+├── app.py              # Flask API server
+├── config.py           # Configuration management
+├── utils/
+│   ├── processing.py   # Main processing pipeline
+│   ├── llm.py         # Ollama client
+│   └── ocr.py         # PDF/OCR processing
+├── start-native.bat   # Windows startup script
+└── requirements.txt   # Python dependencies
+```
+
+## Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run tests
+python -m pytest tests/
+
+# Manual development server
+python app.py
+```
+
+## Model Information
+
+- **Mistral 7B Instruct**: Superior multilingual support for Hungarian and English invoices
+- **CPU Inference**: Works on Intel/AMD CPUs, no GPU required
+- **Privacy**: Models downloaded locally, no external API calls
+- **Cancellation**: Real-time processing cancellation with streaming responses
+
+## Troubleshooting
+
+### Ollama Issues
+```bash
+# Check if running
+tasklist | findstr ollama
+
+# Manual start
+ollama serve
+
+# Check models
+ollama list
+```
+
+### Python Issues
+```bash
+# Recreate virtual environment
+rmdir /s venv
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Port Conflicts
+- Change `PORT=5000` in `.env` if port 5000 is in use
+- Update ngrok command in startup script accordingly
+
+## Security Notes
+
+- ⚠️ **Never commit `.env`** - Contains sensitive API keys
+- 🔒 **Generate secure API keys** for production
+- 🌐 **ngrok tunnels** are public - use strong authentication
+- 📝 **Log files** may contain sensitive data
+
+## License
+
+Private repository - All rights reserved

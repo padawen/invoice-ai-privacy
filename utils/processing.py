@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from .ocr import OCRProcessor
 from .llm import OllamaClient
+from .progress import progress_tracker
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -39,13 +40,14 @@ class InvoiceProcessor:
                 "timestamp": datetime.utcnow().isoformat()
             }
 
-    def process_pdf(self, pdf_bytes: bytes, filename: str = "invoice.pdf") -> Dict[str, Any]:
+    def process_pdf(self, pdf_bytes: bytes, filename: str = "invoice.pdf", job_id: str = None) -> Dict[str, Any]:
         """
         Process PDF invoice through OCR + LLM pipeline
 
         Args:
             pdf_bytes: PDF file as bytes
             filename: Original filename (for logging)
+            job_id: Progress tracking job ID
 
         Returns:
             Structured invoice data dictionary matching OpenAI format
@@ -54,28 +56,68 @@ class InvoiceProcessor:
         logger.info(f"Starting processing of {filename}")
 
         try:
-            # Step 1: Extract text using OCR
+            # Update progress: Setup complete (5%)
+            if job_id:
+                progress_tracker.update_progress(job_id, "upload", 5, "File uploaded, starting OCR extraction", "processing")
+
+                # Check for cancellation
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during setup")
+                    return self.get_cancellation_result(filename, job_id)
+
+            # Step 1: Extract text using OCR (5% - 20%)
             logger.info("Step 1: OCR text extraction...")
+            if job_id:
+                progress_tracker.update_progress(job_id, "ocr", 8, "Starting OCR processing", "processing")
+
             ocr_start = datetime.utcnow()
-            extracted_text = self.ocr_processor.extract_text_from_pdf(pdf_bytes)
+            extracted_text = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id)
             ocr_duration = (datetime.utcnow() - ocr_start).total_seconds()
 
             if not extracted_text or len(extracted_text.strip()) < 10:
+                if job_id:
+                    progress_tracker.set_error(job_id, "OCR extraction failed or returned insufficient text")
                 raise Exception("OCR extraction failed or returned insufficient text")
 
             logger.info(f"OCR completed in {ocr_duration:.2f}s, extracted {len(extracted_text)} characters")
+            if job_id:
+                progress_tracker.update_progress(job_id, "ocr", 20, f"OCR completed, extracted {len(extracted_text)} characters", "processing")
+                progress_tracker.update_stage_duration(job_id, "ocr", ocr_duration)
 
-            # Step 2: Process text with LLM
+                # Check for cancellation after OCR
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled after OCR")
+                    return self.get_cancellation_result(filename, job_id)
+
+            # Step 2: Process text with LLM (20% - 90%)
             logger.info("Step 2: LLM structure extraction...")
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 25, "Starting LLM processing", "processing")
+
             llm_start = datetime.utcnow()
             prompt = self.llm_client.create_extraction_prompt(extracted_text)
-            structured_data = self.llm_client.generate_completion(prompt)
+
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 50, "LLM processing invoice data", "processing")
+
+                # Check for cancellation before LLM processing
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled before LLM processing")
+                    return self.get_cancellation_result(filename, job_id)
+
+            structured_data = self.llm_client.generate_completion(prompt, job_id)
             llm_duration = (datetime.utcnow() - llm_start).total_seconds()
 
             logger.info(f"LLM processing completed in {llm_duration:.2f}s")
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 90, "LLM processing completed", "processing")
+                progress_tracker.update_stage_duration(job_id, "llm", llm_duration)
 
-            # Step 3: Post-process and validate
+            # Step 3: Post-process and validate (90% - 100%)
             logger.info("Step 3: Post-processing...")
+            if job_id:
+                progress_tracker.update_progress(job_id, "postprocess", 95, "Post-processing results", "processing")
+
             final_data = self.post_process_result(structured_data)
 
             # Add processing metadata
@@ -83,6 +125,7 @@ class InvoiceProcessor:
             final_data["_processing_metadata"] = {
                 "filename": filename,
                 "method": "privacy_pipeline",
+                "job_id": job_id,
                 "ocr_duration": ocr_duration,
                 "llm_duration": llm_duration,
                 "total_duration": total_duration,
@@ -91,11 +134,22 @@ class InvoiceProcessor:
             }
 
             logger.info(f"Processing completed successfully in {total_duration:.2f}s")
+
+            # Complete progress tracking
+            if job_id:
+                progress_tracker.update_progress(job_id, "postprocess", 100, "Processing completed successfully", "completed")
+                progress_tracker.update_stage_duration(job_id, "postprocess", (datetime.utcnow() - processing_start).total_seconds() - ocr_duration - llm_duration)
+                progress_tracker.set_result(job_id, final_data)
+
             return final_data
 
         except Exception as e:
             error_msg = f"Processing failed for {filename}: {str(e)}"
             logger.error(error_msg)
+
+            # Update progress with error
+            if job_id:
+                progress_tracker.set_error(job_id, error_msg)
 
             # Return fallback structure with error info
             return self.get_error_fallback(error_msg, filename)
@@ -248,8 +302,13 @@ class InvoiceProcessor:
             date_formats = [
                 "%Y-%m-%d",      # 2024-01-15
                 "%Y.%m.%d",      # 2024.01.15
+                "%Y. %m. %d.",   # 2025. 01. 10.
+                "%Y. %m. %d",    # 2025. 01. 10
+                "%Y / %m / %d",  # 2025 / 01 / 10
                 "%Y/%m/%d",      # 2024/01/15
                 "%d.%m.%Y",      # 15.01.2024
+                "%d. %m. %Y.",   # 15. 01. 2024.
+                "%d. %m. %Y",    # 15. 01. 2024
                 "%d/%m/%Y",      # 15/01/2024
                 "%d-%m-%Y",      # 15-01-2024
                 "%m/%d/%Y",      # 01/15/2024
@@ -299,6 +358,40 @@ class InvoiceProcessor:
                 "filename": filename,
                 "method": "privacy_pipeline",
                 "error": error_message,
+                "processed_at": datetime.utcnow().isoformat()
+            }
+        }
+
+    def get_cancellation_result(self, filename: str, job_id: str = None) -> Dict[str, Any]:
+        """Return structure when processing is cancelled"""
+        return {
+            "id": str(uuid.uuid4()),
+            "cancelled": True,
+            "message": "Processing was cancelled by user",
+            "seller": {
+                "name": "",
+                "address": "",
+                "tax_id": "",
+                "email": "",
+                "phone": ""
+            },
+            "buyer": {
+                "name": "",
+                "address": "",
+                "tax_id": ""
+            },
+            "invoice_number": "",
+            "issue_date": "",
+            "fulfillment_date": "",
+            "due_date": "",
+            "payment_method": "",
+            "currency": "HUF",
+            "invoice_data": [],
+            "_processing_metadata": {
+                "filename": filename,
+                "method": "privacy_pipeline",
+                "job_id": job_id,
+                "cancelled": True,
                 "processed_at": datetime.utcnow().isoformat()
             }
         }

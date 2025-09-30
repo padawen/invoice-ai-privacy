@@ -2,6 +2,7 @@ import json
 import logging
 import requests
 import time
+import threading
 from typing import Dict, Any, Optional
 from json_repair import repair_json
 from config import Config
@@ -62,12 +63,13 @@ class OllamaClient:
             logger.error(f"Model pull failed: {str(e)}")
             return False
 
-    def generate_completion(self, prompt: str) -> Dict[str, Any]:
+    def generate_completion(self, prompt: str, job_id: str = None) -> Dict[str, Any]:
         """
-        Generate completion using Ollama
+        Generate completion using Ollama with aggressive cancellation support
 
         Args:
             prompt: Input prompt for the LLM
+            job_id: Optional job ID for cancellation checking
 
         Returns:
             Dict containing the structured invoice data
@@ -75,48 +77,147 @@ class OllamaClient:
         try:
             logger.info("Starting LLM processing...")
 
-            # Prepare the request
-            payload = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temperature for consistent structured output
-                    "top_p": 0.9,
-                    "num_predict": 2048,  # Max tokens for response
-                }
-            }
+            # Check for cancellation before starting LLM request
+            if job_id:
+                from .progress import progress_tracker
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled before LLM request")
+                    raise Exception("Processing was cancelled by user")
 
-            # Make request to Ollama
-            start_time = time.time()
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                timeout=self.timeout
-            )
-
-            if response.status_code != 200:
-                raise Exception(f"Ollama API error: {response.status_code} - {response.text}")
-
-            response_data = response.json()
-            raw_response = response_data.get('response', '')
-
-            processing_time = time.time() - start_time
-            logger.info(f"LLM processing completed in {processing_time:.2f} seconds")
-
-            if not raw_response:
-                raise Exception("Empty response from Ollama")
-
-            # Parse the JSON response
-            structured_data = self.parse_llm_response(raw_response)
-            return structured_data
+            # Use threaded approach for better cancellation control
+            return self._generate_with_cancellation(prompt, job_id)
 
         except requests.exceptions.Timeout:
             logger.error("LLM request timed out")
-            raise Exception(f"LLM processing timed out after {self.timeout} seconds")
+            raise Exception(f"LLM processing timed out")
         except Exception as e:
             logger.error(f"LLM processing failed: {str(e)}")
             raise Exception(f"LLM processing failed: {str(e)}")
+
+    def _generate_with_cancellation(self, prompt: str, job_id: str = None) -> Dict[str, Any]:
+        """Generate completion with aggressive cancellation monitoring"""
+
+        # Shared state between threads
+        result = {'response': None, 'error': None, 'cancelled': False}
+        response_obj = {'response': None}
+
+        def ollama_request():
+            """Run Ollama request in separate thread"""
+            try:
+                # Prepare the request with streaming enabled
+                payload = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": True,
+                    "options": {
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "num_predict": 1024,
+                        "num_ctx": 2048,
+                        "num_thread": 8,
+                        "repeat_penalty": 1.1,
+                        "top_k": 40
+                    }
+                }
+
+                start_time = time.time()
+                response = requests.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                    stream=True,
+                    timeout=self.timeout  # Use config timeout (5 minutes)
+                )
+
+                response_obj['response'] = response
+
+                if response.status_code != 200:
+                    result['error'] = f"Ollama API error: {response.status_code} - {response.text}"
+                    return
+
+                # Process streaming response
+                raw_response = ""
+                chunk_count = 0
+
+                try:
+                    for line in response.iter_lines(decode_unicode=True):
+                        if result['cancelled']:
+                            logger.info(f"Job {job_id} cancellation detected, stopping LLM at chunk {chunk_count}")
+                            break
+
+                        if line.strip():
+                            try:
+                                chunk_data = json.loads(line)
+                                if 'response' in chunk_data:
+                                    raw_response += chunk_data['response']
+
+                                if chunk_data.get('done', False):
+                                    break
+
+                                chunk_count += 1
+                            except json.JSONDecodeError:
+                                continue
+
+                    processing_time = time.time() - start_time
+                    logger.info(f"LLM processing completed in {processing_time:.2f} seconds")
+
+                    if result['cancelled']:
+                        result['error'] = "Processing was cancelled by user"
+                    elif not raw_response:
+                        result['error'] = "Empty response from Ollama"
+                    else:
+                        # Parse the JSON response
+                        structured_data = self.parse_llm_response(raw_response)
+                        result['response'] = structured_data
+
+                finally:
+                    response.close()
+
+            except Exception as e:
+                result['error'] = str(e)
+
+        # Start the Ollama request in a separate thread
+        request_thread = threading.Thread(target=ollama_request)
+        request_thread.daemon = True
+        request_thread.start()
+
+        # Monitor for cancellation while request is running
+        check_interval = 0.2  # Check every 200ms for faster response
+        while request_thread.is_alive():
+            if job_id:
+                from .progress import progress_tracker
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} cancellation requested, signaling stop")
+                    result['cancelled'] = True
+
+                    # Try to close the response connection if available
+                    if response_obj['response']:
+                        try:
+                            response_obj['response'].close()
+                            logger.info(f"Job {job_id} - closed HTTP connection")
+                        except Exception as e:
+                            logger.debug(f"Job {job_id} - error closing connection: {e}")
+
+                    # Wait a bit for thread to notice cancellation
+                    request_thread.join(timeout=3.0)
+
+                    if request_thread.is_alive():
+                        logger.warning(f"Job {job_id} - thread still alive after cancellation, but proceeding")
+
+                    raise Exception("Processing was cancelled by user")
+
+            time.sleep(check_interval)
+
+        # Wait for thread to complete
+        request_thread.join()
+
+        # Check final results
+        if result['error']:
+            raise Exception(result['error'])
+
+        if result['response'] is None:
+            raise Exception("No response from Ollama")
+
+        return result['response']
 
     def parse_llm_response(self, response_text: str) -> Dict[str, Any]:
         """

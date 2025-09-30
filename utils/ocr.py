@@ -28,18 +28,26 @@ class OCRProcessor:
 
         logger.info(f"Tesseract configured with language: {self.config.OCR_LANGUAGE}")
 
-    def extract_text_from_pdf(self, pdf_bytes: bytes) -> str:
+    def extract_text_from_pdf(self, pdf_bytes: bytes, job_id: str = None) -> str:
         """
         Extract text from PDF using OCR
 
         Args:
             pdf_bytes: PDF file as bytes
+            job_id: Optional job ID for cancellation checking
 
         Returns:
             Extracted text as string
         """
         try:
             logger.info("Starting PDF to text extraction")
+
+            # Check for cancellation before starting
+            if job_id:
+                from .progress import progress_tracker
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled before OCR")
+                    raise Exception("Processing was cancelled by user")
 
             # Convert PDF to images
             images = self.pdf_to_images(pdf_bytes)
@@ -49,6 +57,13 @@ class OCRProcessor:
             # Extract text from all images
             extracted_texts = []
             for i, image in enumerate(images):
+                # Check for cancellation before processing each page
+                if job_id:
+                    from .progress import progress_tracker
+                    if progress_tracker.is_cancelled(job_id):
+                        logger.info(f"Job {job_id} was cancelled during OCR processing (page {i+1})")
+                        raise Exception("Processing was cancelled by user")
+
                 logger.info(f"Processing page {i+1}/{len(images)}")
 
                 # Preprocess image for better OCR
