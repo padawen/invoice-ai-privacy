@@ -22,7 +22,7 @@ echo -------------------------
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [INSTALL] Downloading Python 3.11...
-    powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.8/python-3.11.8-amd64.exe' -OutFile '%TEMP%\python-installer.exe'"
+    powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.8/python-3.11.8-amd64.exe' -OutFile '%TEMP%\\python-installer.exe'"
     echo [INSTALL] Installing Python (this may take a few minutes)...
     "%TEMP%\python-installer.exe" /quiet InstallAllUsers=1 PrependPath=1
     del "%TEMP%\python-installer.exe"
@@ -38,7 +38,7 @@ if exist "%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" (
     echo [OK] Ollama already installed
 ) else (
     echo [INSTALL] Downloading Ollama...
-    powershell -Command "Invoke-WebRequest -Uri 'https://ollama.ai/download/OllamaSetup.exe' -OutFile '%TEMP%\OllamaSetup.exe'"
+    powershell -Command "Invoke-WebRequest -Uri 'https://ollama.ai/download/OllamaSetup.exe' -OutFile '%TEMP%\\OllamaSetup.exe'"
     echo [INSTALL] Installing Ollama...
     "%TEMP%\OllamaSetup.exe" /S
     del "%TEMP%\OllamaSetup.exe"
@@ -51,7 +51,7 @@ echo ----------------------------------
 git --version >nul 2>&1
 if errorlevel 1 (
     echo [INSTALL] Downloading Git...
-    powershell -Command "Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.42.0.windows.2/Git-2.42.0.2-64-bit.exe' -OutFile '%TEMP%\git-installer.exe'"
+    powershell -Command "Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.42.0.windows.2/Git-2.42.0.2-64-bit.exe' -OutFile '%TEMP%\\git-installer.exe'"
     echo [INSTALL] Installing Git...
     "%TEMP%\git-installer.exe" /SILENT
     del "%TEMP%\git-installer.exe"
@@ -66,8 +66,8 @@ echo -----------------------------------
 where ngrok >nul 2>&1
 if errorlevel 1 (
     echo [INSTALL] Downloading ngrok...
-    powershell -Command "Invoke-WebRequest -Uri 'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip' -OutFile '%TEMP%\ngrok.zip'"
-    powershell -Command "Expand-Archive -Path '%TEMP%\ngrok.zip' -DestinationPath 'C:\Windows\System32\' -Force"
+    powershell -Command "Invoke-WebRequest -Uri 'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip' -OutFile '%TEMP%\\ngrok.zip'"
+    powershell -Command "Expand-Archive -Path '%TEMP%\\ngrok.zip' -DestinationPath 'C:\\Windows\\System32\\' -Force"
     del "%TEMP%\ngrok.zip"
     echo [OK] ngrok installed
 ) else (
