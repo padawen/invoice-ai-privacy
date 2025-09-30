@@ -96,10 +96,10 @@ echo [START] Starting Ollama service...
 start "Ollama Service" /min "%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" serve
 timeout /t 10 /nobreak >nul
 
-echo [MODEL] Downloading Qwen2.5 7B Instruct Q4 model...
-echo This is a large file (~4GB) and may take 10-30 minutes depending on your internet speed.
+echo [MODEL] Downloading Qwen2.5 3B Instruct Q4 model...
+echo This is a smaller, faster model (~2GB) and may take 5-15 minutes depending on your internet speed.
 echo Please be patient...
-"%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" pull qwen2.5:7b-instruct-q4_K_M
+"%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" pull qwen2.5:3b-instruct-q4_K_M
 
 echo:
 echo ========================================
@@ -111,7 +111,7 @@ echo - Python 3.11 (if not already present)
 echo - Ollama AI runtime
 echo - Git (if not already present)
 echo - ngrok tunneling tool
-echo - Qwen2.5 7B Instruct Q4 model (~4GB)
+echo - Qwen2.5 3B Instruct Q4 model (~2GB)
 echo - Python virtual environment with dependencies
 echo:
 echo Next steps:

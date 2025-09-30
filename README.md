@@ -1,11 +1,11 @@
 # Invoice AI Privacy
 
-A completely local invoice processing service using Ollama (Qwen2.5 7B Instruct Q4) for AI-powered data extraction. No cloud dependencies, full privacy.
+A completely local invoice processing service using Ollama (Qwen2.5 3B Instruct Q4) for AI-powered data extraction. No cloud dependencies, full privacy.
 
 ## Features
 
 - **🔒 Complete Privacy**: Everything runs locally, no data leaves your machine
-- **⚡ Fast Processing**: Mistral 7B Instruct model with multilingual support (Hungarian/English)
+- **⚡ Fast Processing**: Qwen2.5 3B Instruct model with multilingual support (Hungarian/English)
 - **📊 Real-time Progress**: Live progress tracking with cancellation support
 - **📄 PDF Support**: OCR-based text extraction from PDF invoices
 - **🔑 Secure API**: Bearer token authentication for production use
@@ -44,7 +44,7 @@ A completely local invoice processing service using Ollama (Qwen2.5 7B Instruct 
    # - Python 3.11
    # - Ollama AI runtime
    # - Git and ngrok
-   # - Download Qwen2.5 7B Instruct Q4 model (~4GB)
+   # - Download Qwen2.5 3B Instruct Q4 model (~2GB)
    # - Setup Python virtual environment
    ```
 
@@ -84,12 +84,12 @@ Edit `.env` file:
 API_KEY=your_secure_api_key_here
 
 # Ollama Settings
-OLLAMA_MODEL=llama3.2:3b
+OLLAMA_MODEL=qwen2.5:3b-instruct-q4_K_M
 OLLAMA_HOST=localhost:11434
 
 # Processing
 MAX_FILE_SIZE=52428800  # 50MB
-OCR_LANGUAGE=eng
+OCR_LANGUAGE=hun+eng
 
 # Server
 PORT=5000
@@ -125,11 +125,11 @@ python app.py
 
 ## Model Information
 
-- **Qwen2.5 7B Instruct Q4**: Optimal balance of speed and accuracy for invoice processing
-- **GPU Accelerated**: Optimized for RTX 2070+ GPUs with 4-6GB VRAM
+- **Qwen2.5 3B Instruct Q4**: Fast and efficient model optimized for speed
+- **GPU Accelerated**: Optimized for RTX 2060+ GPUs with 2-4GB VRAM
 - **Privacy**: Models downloaded locally, no external API calls
 - **Cancellation**: Real-time processing cancellation with streaming responses
-- **Performance**: 3-6 second response times on GPU, excellent JSON output quality
+- **Performance**: 20-30 second total processing on GPU with chunked extraction, excellent JSON output quality
 
 ## Troubleshooting
 

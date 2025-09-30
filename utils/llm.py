@@ -63,7 +63,7 @@ class OllamaClient:
             logger.error(f"Model pull failed: {str(e)}")
             return False
 
-    def generate_completion(self, prompt: str, job_id: str = None) -> Dict[str, Any]:
+    def generate_completion(self, prompt: str, job_id: str = None, expect_array: bool = False) -> Any:
         """
         Generate completion using Ollama with aggressive cancellation support
 
@@ -85,7 +85,7 @@ class OllamaClient:
                     raise Exception("Processing was cancelled by user")
 
             # Use threaded approach for better cancellation control
-            return self._generate_with_cancellation(prompt, job_id)
+            return self._generate_with_cancellation(prompt, job_id, expect_array)
 
         except requests.exceptions.Timeout:
             logger.error("LLM request timed out")
@@ -94,7 +94,7 @@ class OllamaClient:
             logger.error(f"LLM processing failed: {str(e)}")
             raise Exception(f"LLM processing failed: {str(e)}")
 
-    def _generate_with_cancellation(self, prompt: str, job_id: str = None) -> Dict[str, Any]:
+    def _generate_with_cancellation(self, prompt: str, job_id: str = None, expect_array: bool = False) -> Any:
         """Generate completion with aggressive cancellation monitoring"""
 
         # Shared state between threads
@@ -112,12 +112,12 @@ class OllamaClient:
                     "options": {
                         "temperature": 0.1,
                         "top_p": 0.9,
-                        "num_predict": 512,
+                        "num_predict": 768,
                         "num_ctx": 2048,
                         "num_gpu": 1,
-                        "num_thread": 8,
-                        "repeat_penalty": 1.1,
-                        "top_k": 40
+                        "num_thread": 4,
+                        "repeat_penalty": 1.05,
+                        "top_k": 20
                     }
                 }
 
@@ -160,6 +160,7 @@ class OllamaClient:
 
                     processing_time = time.time() - start_time
                     logger.info(f"LLM processing completed in {processing_time:.2f} seconds")
+                    logger.info(f"Raw LLM response ({len(raw_response)} chars):\n{raw_response[:500]}...")
 
                     if result['cancelled']:
                         result['error'] = "Processing was cancelled by user"
@@ -167,7 +168,8 @@ class OllamaClient:
                         result['error'] = "Empty response from Ollama"
                     else:
                         # Parse the JSON response
-                        structured_data = self.parse_llm_response(raw_response)
+                        structured_data = self.parse_llm_response(raw_response, expect_array=expect_array)
+                        logger.info(f"Parsed structured data: {structured_data}")
                         result['response'] = structured_data
 
                 finally:
@@ -220,15 +222,16 @@ class OllamaClient:
 
         return result['response']
 
-    def parse_llm_response(self, response_text: str) -> Dict[str, Any]:
+    def parse_llm_response(self, response_text: str, expect_array: bool = False) -> Any:
         """
         Parse LLM response to extract JSON structure
 
         Args:
             response_text: Raw response from LLM
+            expect_array: If True, expects a JSON array instead of object
 
         Returns:
-            Parsed invoice data dictionary
+            Parsed invoice data dictionary or array
         """
         try:
             # Clean the response text
@@ -241,7 +244,11 @@ class OllamaClient:
                 cleaned_response = cleaned_response[3:-3].strip()
 
             # Extract JSON from text
-            json_match = self.extract_json_from_text(cleaned_response)
+            if expect_array:
+                json_match = self.extract_json_array_from_text(cleaned_response)
+            else:
+                json_match = self.extract_json_from_text(cleaned_response)
+
             if not json_match:
                 raise ValueError("No valid JSON found in LLM response")
 
@@ -254,7 +261,11 @@ class OllamaClient:
                 repaired_json = repair_json(json_match)
                 parsed_data = json.loads(repaired_json)
 
-            # Validate structure
+            # If expecting array, return it directly
+            if expect_array:
+                return parsed_data if isinstance(parsed_data, list) else []
+
+            # Validate structure for objects
             validated_data = self.validate_and_normalize(parsed_data)
             return validated_data
 
@@ -263,7 +274,7 @@ class OllamaClient:
             logger.error(f"Raw response: {response_text}")
 
             # Return fallback structure
-            return self.get_fallback_structure()
+            return [] if expect_array else self.get_fallback_structure()
 
     def extract_json_from_text(self, text: str) -> Optional[str]:
         """Extract JSON object from text"""
@@ -271,6 +282,20 @@ class OllamaClient:
 
         # Find JSON-like structure
         json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+
+        if matches:
+            # Return the largest/most complete match
+            return max(matches, key=len)
+
+        return None
+
+    def extract_json_array_from_text(self, text: str) -> Optional[str]:
+        """Extract JSON array from text"""
+        import re
+
+        # Find JSON array structure
+        json_pattern = r'\[[^\[\]]*(?:\{[^{}]*\}[^\[\]]*)*\]'
         matches = re.findall(json_pattern, text, re.DOTALL)
 
         if matches:
@@ -377,72 +402,50 @@ class OllamaClient:
             "invoice_data": []
         }
 
-    def create_extraction_prompt(self, ocr_text: str) -> str:
+    def create_extraction_prompt(self, ocr_text: str, chunk_type: str = "full") -> str:
         """
-        Create prompt for invoice data extraction
+        Create prompt for invoice data extraction with chunking support
 
         Args:
             ocr_text: Text extracted from PDF via OCR
+            chunk_type: Type of extraction - "metadata", "items", or "full"
 
         Returns:
             Formatted prompt for LLM
         """
-        prompt = f"""
-Extract all relevant data from the following invoice text and return only the JSON result in the exact format shown below, in English.
+        if chunk_type == "metadata":
+            # Extract only metadata (seller, buyer, dates)
+            prompt = f"""You are an invoice data extractor. Extract seller, buyer, and invoice metadata from the text below.
 
-CRITICAL INSTRUCTIONS:
-1. You MUST return a valid JSON object in the exact format specified below, even if some fields are empty
-2. If any field cannot be found, use an empty string "" for that field - NEVER omit the field entirely
-3. The response must be ONLY the JSON object - no explanations, notes, or additional text
+Return valid JSON only:
+{{"seller":{{"name":"","address":"","tax_id":"","email":"","phone":""}},"buyer":{{"name":"","address":"","tax_id":""}},"invoice_number":"","issue_date":"YYYY-MM-DD","fulfillment_date":"YYYY-MM-DD","due_date":"YYYY-MM-DD","payment_method":"","currency":"HUF"}}
 
-Data Extraction Instructions:
-1. Identify all invoice line items from the text. Each product/service must be a separate entry.
-2. For each line item, extract:
-   - "name": product or service name
-   - "quantity": quantity (numeric, as string)
-   - "unit_price": unit price (numeric, as string)
-   - "net": net value (numeric, as string)
-   - "gross": gross value (numeric, as string)
-   - "currency": currency code (use "HUF" if you see "Ft" or "ft")
-3. For all numeric values, remove spaces and currency symbols, convert commas to periods
-4. Extract seller, buyer information and invoice metadata
+Invoice text:
+{ocr_text[:1000]}
 
-MANDATORY JSON format:
-{{
-  "seller": {{
-    "name": "",
-    "address": "",
-    "tax_id": "",
-    "email": "",
-    "phone": ""
-  }},
-  "buyer": {{
-    "name": "",
-    "address": "",
-    "tax_id": ""
-  }},
-  "invoice_number": "",
-  "issue_date": "",
-  "fulfillment_date": "",
-  "due_date": "",
-  "payment_method": "",
-  "currency": "",
-  "invoice_data": [
-    {{
-      "name": "",
-      "quantity": "",
-      "unit_price": "",
-      "net": "",
-      "gross": "",
-      "currency": ""
-    }}
-  ]
-}}
+JSON output:"""
+        elif chunk_type == "items":
+            # Extract only line items
+            prompt = f"""You are an invoice data extractor. Find all invoice line items (products/services) from the text below.
 
-Invoice text to process:
+Return valid JSON array only:
+[{{"name":"product name","quantity":"1","unit_price":"100","net":"100","gross":"127","currency":"HUF"}}]
 
+Invoice text:
 {ocr_text}
 
-Return ONLY the JSON object:"""
+JSON output:"""
+        else:
+            # Full extraction (optimized for short invoices)
+            truncated_text = ocr_text[:1800] if len(ocr_text) > 1800 else ocr_text
+            prompt = f"""You are an invoice data extractor. Extract all invoice data from the text below.
+
+Return valid JSON only:
+{{"seller":{{"name":"","address":"","tax_id":"","email":"","phone":""}},"buyer":{{"name":"","address":"","tax_id":""}},"invoice_number":"","issue_date":"","fulfillment_date":"","due_date":"","payment_method":"","currency":"","invoice_data":[{{"name":"","quantity":"","unit_price":"","net":"","gross":"","currency":""}}]}}
+
+Invoice text:
+{truncated_text}
+
+JSON output:"""
 
         return prompt

@@ -90,22 +90,41 @@ class InvoiceProcessor:
                     return self.get_cancellation_result(filename, job_id)
 
             # Step 2: Process text with LLM (20% - 90%)
-            logger.info("Step 2: LLM structure extraction...")
+            logger.info("Step 2: LLM structure extraction (chunked strategy)...")
             if job_id:
                 progress_tracker.update_progress(job_id, "llm", 25, "Starting LLM processing", "processing")
 
             llm_start = datetime.utcnow()
-            prompt = self.llm_client.create_extraction_prompt(extracted_text)
 
+            # Always use chunking strategy for better speed and accuracy
+            logger.info(f"Extracting invoice data in 2 chunks ({len(extracted_text)} chars)")
+
+            # Chunk 1: Extract metadata
             if job_id:
-                progress_tracker.update_progress(job_id, "llm", 50, "LLM processing invoice data", "processing")
+                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata", "processing")
 
-                # Check for cancellation before LLM processing
+            metadata_prompt = self.llm_client.create_extraction_prompt(extracted_text, "metadata")
+            metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
+
+            # Chunk 2: Extract line items
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items", "processing")
                 if progress_tracker.is_cancelled(job_id):
-                    logger.info(f"Job {job_id} was cancelled before LLM processing")
+                    logger.info(f"Job {job_id} was cancelled during chunked processing")
                     return self.get_cancellation_result(filename, job_id)
 
-            structured_data = self.llm_client.generate_completion(prompt, job_id)
+            items_prompt = self.llm_client.create_extraction_prompt(extracted_text, "items")
+            items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=True)
+
+            # Combine results
+            if isinstance(items_data, list):
+                metadata["invoice_data"] = items_data
+            elif isinstance(items_data, dict) and "invoice_data" in items_data:
+                metadata["invoice_data"] = items_data["invoice_data"]
+            else:
+                metadata["invoice_data"] = []
+
+            structured_data = metadata
             llm_duration = (datetime.utcnow() - llm_start).total_seconds()
 
             logger.info(f"LLM processing completed in {llm_duration:.2f}s")

@@ -13,12 +13,12 @@ class Config:
 
     # Ollama settings
     OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')
-    OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes for Phi-3.5
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:3b-instruct-q4_K_M')
+    OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes
 
     # OCR settings
-    OCR_LANGUAGE = os.getenv('OCR_LANGUAGE', 'eng')
-    OCR_DPI = int(os.getenv('OCR_DPI', 300))
+    OCR_LANGUAGE = os.getenv('OCR_LANGUAGE', 'hun+eng')
+    OCR_DPI = int(os.getenv('OCR_DPI', 200))
     OCR_CONFIG = '--oem 3 --psm 6'  # OCR Engine Mode 3, Page Segmentation Mode 6
 
     # Processing settings
@@ -43,15 +43,15 @@ class Config:
 
 class DevelopmentConfig(Config):
     DEBUG = True
-    OLLAMA_MODEL = 'llama3.2:3b'  # Fast model for development
+    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Fast model for development
 
 class ProductionConfig(Config):
     DEBUG = False
-    OLLAMA_MODEL = 'llama3.2:3b'  # Fast model for production
+    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Fast model for production
 
 class TestingConfig(Config):
     TESTING = True
-    OLLAMA_MODEL = 'llama3.2:3b'  # Consistent model for testing
+    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Consistent model for testing
 
 # Config mapping
 config = {

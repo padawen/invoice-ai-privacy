@@ -116,18 +116,11 @@ class OCRProcessor:
             # Convert to grayscale
             gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
 
-            # Apply Gaussian blur to remove noise
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-            # Apply threshold to get binary image
-            _, threshold = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-            # Apply morphological operations to clean up
-            kernel = np.ones((1, 1), np.uint8)
-            cleaned = cv2.morphologyEx(threshold, cv2.MORPH_CLOSE, kernel)
+            # Apply simple threshold (faster than OTSU)
+            _, threshold = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
 
             # Convert back to PIL
-            processed_image = Image.fromarray(cleaned)
+            processed_image = Image.fromarray(threshold)
 
             return processed_image
 
@@ -163,13 +156,13 @@ class OCRProcessor:
 
     def clean_text(self, text: str) -> str:
         """
-        Clean extracted text
+        Clean extracted text and extract relevant invoice sections
 
         Args:
             text: Raw text from OCR
 
         Returns:
-            Cleaned text
+            Cleaned and filtered text focusing on invoice data
         """
         if not text:
             return ""
@@ -178,8 +171,46 @@ class OCRProcessor:
         lines = [line.strip() for line in text.split('\n')]
         lines = [line for line in lines if line]  # Remove empty lines
 
+        # Smart filtering: Remove common noise patterns
+        filtered_lines = []
+        skip_patterns = [
+            'terms and conditions',
+            'privacy policy',
+            'general terms',
+            'disclaimer',
+            'footer',
+            'page \d+ of \d+',
+            'copyright',
+            'all rights reserved',
+            'www\.',
+            'https?://',
+        ]
+
+        import re
+        for line in lines:
+            line_lower = line.lower()
+            # Skip lines matching noise patterns
+            should_skip = False
+            for pattern in skip_patterns:
+                if re.search(pattern, line_lower):
+                    should_skip = True
+                    break
+
+            # Keep lines with important invoice data markers
+            has_important_data = any([
+                re.search(r'\d{4}[-./]\d{1,2}[-./]\d{1,2}', line),  # Dates
+                re.search(r'invoice|receipt|bill|számlaszám', line_lower),  # Invoice markers
+                re.search(r'\d+[.,]\d+', line),  # Numbers (prices)
+                re.search(r'tax|vat|áfa', line_lower),  # Tax info
+                re.search(r'total|subtotal|összesen', line_lower),  # Totals
+                re.search(r'[A-Z]{2,}[-\s]?\d{8,}', line),  # Tax IDs
+            ])
+
+            if not should_skip or has_important_data:
+                filtered_lines.append(line)
+
         # Join lines back
-        cleaned = '\n'.join(lines)
+        cleaned = '\n'.join(filtered_lines)
 
         return cleaned
 

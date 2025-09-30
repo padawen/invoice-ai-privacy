@@ -7,18 +7,18 @@ echo:
 
 REM Set environment variables
 set OLLAMA_HOST=localhost:11434
-set OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M
+set OLLAMA_MODEL=qwen2.5:3b-instruct-q4_K_M
 set OLLAMA_TIMEOUT=300
 set DEBUG=false
 set PORT=5000
 set HOST=0.0.0.0
-set OCR_LANGUAGE=eng
+set OCR_LANGUAGE=hun+eng
 set MAX_FILE_SIZE=52428800
 set LOG_LEVEL=INFO
 
 echo Configuration:
-echo    Model: Qwen2.5 7B Instruct Q4 (optimal speed/quality balance)
-echo    OCR: Tesseract (English)
+echo    Model: Qwen2.5 3B Instruct Q4 (fast, optimized for speed)
+echo    OCR: Tesseract (Hungarian + English)
 echo    API Key: [From .env file]
 echo    Ports: 5000 (Flask), 11434 (Ollama)
 echo:
@@ -75,8 +75,8 @@ if errorlevel 1 (
 echo [OK] Ollama is responding
 
 REM Check if model exists
-echo [MODEL] Verifying Qwen2.5 7B Instruct Q4 model...
-"%OLLAMA_EXE%" list | findstr "qwen2.5:7b-instruct-q4_K_M" >nul
+echo [MODEL] Verifying Qwen2.5 3B Instruct Q4 model...
+"%OLLAMA_EXE%" list | findstr "qwen2.5:3b-instruct-q4_K_M" >nul
 if errorlevel 1 (
     echo [ERROR] Model not found. Please run install.bat first to download the model.
     pause
