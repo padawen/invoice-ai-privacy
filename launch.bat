@@ -16,11 +16,23 @@ set OCR_LANGUAGE=hun+eng
 set MAX_FILE_SIZE=52428800
 set LOG_LEVEL=INFO
 
+REM Check vision mode from .env
+findstr "USE_VISION_MODEL=true" .env >nul 2>&1
+if not errorlevel 1 (
+    set VISION_MODE=enabled
+    set MODEL_NAME=LLaVA 7B Vision
+) else (
+    set VISION_MODE=disabled
+    set MODEL_NAME=Qwen2.5 3B Instruct Q4
+)
+
 echo Configuration:
-echo    Model: Qwen2.5 3B Instruct Q4 (fast, optimized for speed)
-echo    OCR: Tesseract (Hungarian + English)
+echo    Processing Mode: Vision=%VISION_MODE%
+echo    Text Model: Qwen2.5 3B Instruct Q4
+echo    Vision Model: LLaVA 7B ^(for image processing^)
+echo    OCR: Tesseract ^(Hungarian + English^)
 echo    API Key: [From .env file]
-echo    Ports: 5000 (Flask), 11434 (Ollama)
+echo    Ports: 5000 ^(Flask^), 11434 ^(Ollama^)
 echo:
 
 REM Find Ollama executable
@@ -74,15 +86,26 @@ if errorlevel 1 (
 )
 echo [OK] Ollama is responding
 
-REM Check if model exists
-echo [MODEL] Verifying Qwen2.5 3B Instruct Q4 model...
-"%OLLAMA_EXE%" list | findstr "qwen2.5:3b-instruct-q4_K_M" >nul
-if errorlevel 1 (
-    echo [ERROR] Model not found. Please run install.bat first to download the model.
-    pause
-    exit /b 1
+REM Check if models exist
+if "%VISION_MODE%"=="enabled" (
+    echo [MODEL] Verifying LLaVA 7B vision model...
+    "%OLLAMA_EXE%" list | findstr "llava:7b" >nul
+    if errorlevel 1 (
+        echo [ERROR] LLaVA model not found. Run: ollama pull llava:7b
+        pause
+        exit /b 1
+    )
+    echo [OK] Vision model ready
+) else (
+    echo [MODEL] Verifying Qwen2.5 3B Instruct Q4 model...
+    "%OLLAMA_EXE%" list | findstr "qwen2.5:3b-instruct-q4_K_M" >nul
+    if errorlevel 1 (
+        echo [ERROR] Model not found. Please run install.bat first.
+        pause
+        exit /b 1
+    )
+    echo [OK] Text model ready
 )
-echo [OK] Model ready
 
 REM Check and start ngrok if needed (optional)
 echo [NGROK] Checking if ngrok is available...

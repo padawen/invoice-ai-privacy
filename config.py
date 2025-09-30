@@ -16,6 +16,10 @@ class Config:
     OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:3b-instruct-q4_K_M')
     OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes
 
+    # Vision model settings
+    USE_VISION_MODEL = os.getenv('USE_VISION_MODEL', 'false').lower() == 'true'
+    VISION_MODEL = os.getenv('VISION_MODEL', 'llava:7b')
+
     # OCR settings
     OCR_LANGUAGE = os.getenv('OCR_LANGUAGE', 'hun+eng')
     OCR_DPI = int(os.getenv('OCR_DPI', 200))

@@ -3,8 +3,14 @@ import logging
 import requests
 import time
 import threading
+import warnings
 from typing import Dict, Any, Optional
-from json_repair import repair_json
+
+# Suppress json_repair warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore")
+    from json_repair import repair_json
+
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -161,6 +167,8 @@ class OllamaClient:
                     processing_time = time.time() - start_time
                     logger.info(f"LLM processing completed in {processing_time:.2f} seconds")
                     logger.info(f"Raw LLM response ({len(raw_response)} chars):\n{raw_response[:500]}...")
+                    # DEBUG: Log the prompt to see what LLM actually sees
+                    logger.info(f"DEBUG - Prompt sent to LLM (first 1500 chars):\n{prompt[:1500]}")
 
                     if result['cancelled']:
                         result['error'] = "Processing was cancelled by user"
@@ -359,7 +367,7 @@ class OllamaClient:
         }
 
     def normalize_invoice_items(self, items_data: Any) -> list:
-        """Normalize invoice items array"""
+        """Normalize invoice items array and validate gross > net"""
         if not isinstance(items_data, list):
             return []
 
@@ -374,6 +382,24 @@ class OllamaClient:
                     "gross": str(item.get("gross", "")),
                     "currency": str(item.get("currency", ""))
                 }
+
+                # Validate that gross > net (if both are valid numbers)
+                try:
+                    import re
+                    # Extract numeric values (remove currency, spaces, etc)
+                    net_str = re.sub(r'[^\d,.-]', '', normalized_item["net"])
+                    gross_str = re.sub(r'[^\d,.-]', '', normalized_item["gross"])
+
+                    # Convert to float (handle comma as decimal separator)
+                    net_val = float(net_str.replace(',', '.'))
+                    gross_val = float(gross_str.replace(',', '.'))
+
+                    # If gross < net, they're swapped - log warning
+                    if gross_val < net_val and gross_val > 0:
+                        logger.warning(f"Item '{normalized_item['name'][:30]}': gross ({gross_val}) < net ({net_val}) - possible column confusion")
+                except:
+                    pass  # Skip validation if values aren't numeric
+
                 normalized_items.append(normalized_item)
 
         return normalized_items
@@ -415,26 +441,42 @@ class OllamaClient:
         """
         if chunk_type == "metadata":
             # Extract only metadata (seller, buyer, dates)
-            prompt = f"""You are an invoice data extractor. Extract seller, buyer, and invoice metadata from the text below.
+            prompt = f"""Extract invoice metadata. For buyer and seller:
+- name: company/person name ONLY (exclude address)
+- address: full address separately
 
-Return valid JSON only:
+Return JSON:
 {{"seller":{{"name":"","address":"","tax_id":"","email":"","phone":""}},"buyer":{{"name":"","address":"","tax_id":""}},"invoice_number":"","issue_date":"YYYY-MM-DD","fulfillment_date":"YYYY-MM-DD","due_date":"YYYY-MM-DD","payment_method":"","currency":"HUF"}}
 
 Invoice text:
 {ocr_text[:1000]}
 
-JSON output:"""
+JSON:"""
         elif chunk_type == "items":
             # Extract only line items
-            prompt = f"""You are an invoice data extractor. Find all invoice line items (products/services) from the text below.
+            prompt = f"""Extract invoice line items. For each data row, find ALL prices/numbers in the row, then:
+- name: item description (text at start)
+- quantity: first small number (usually 1-10)
+- unit_price: first large price
+- net: middle price (net subtotal before tax)
+- gross: LAST price in the row (gross total with tax)
 
-Return valid JSON array only:
-[{{"name":"product name","quantity":"1","unit_price":"100","net":"100","gross":"127","currency":"HUF"}}]
+The last price on each row is always the gross total. Ignore any tax/VAT columns in between.
 
-Invoice text:
+Example row: "Item name 123 1 1000,00 1000,00 27% 270,00 1270,00"
+- name: "Item name"
+- quantity: "1"
+- unit_price: "1000,00"
+- net: "1000,00"
+- gross: "1270,00" (the LAST number)
+
+Return JSON:
+[{{"name":"","quantity":"","unit_price":"","net":"","gross":"","currency":"HUF"}}]
+
+Table:
 {ocr_text}
 
-JSON output:"""
+JSON:"""
         else:
             # Full extraction (optimized for short invoices)
             truncated_text = ocr_text[:1800] if len(ocr_text) > 1800 else ocr_text

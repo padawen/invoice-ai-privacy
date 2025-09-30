@@ -28,19 +28,20 @@ class OCRProcessor:
 
         logger.info(f"Tesseract configured with language: {self.config.OCR_LANGUAGE}")
 
-    def extract_text_from_pdf(self, pdf_bytes: bytes, job_id: str = None) -> str:
+    def extract_text_from_pdf(self, pdf_bytes: bytes, job_id: str = None, structured: bool = False) -> str:
         """
         Extract text from PDF using OCR
 
         Args:
             pdf_bytes: PDF file as bytes
             job_id: Optional job ID for cancellation checking
+            structured: If True, use table structure extraction (for line items)
 
         Returns:
             Extracted text as string
         """
         try:
-            logger.info("Starting PDF to text extraction")
+            logger.info(f"Starting PDF to text extraction (structured={structured})")
 
             # Check for cancellation before starting
             if job_id:
@@ -69,8 +70,12 @@ class OCRProcessor:
                 # Preprocess image for better OCR
                 processed_image = self.preprocess_image(image)
 
-                # Extract text
-                text = self.image_to_text(processed_image)
+                # Extract text (structured or plain)
+                if structured:
+                    text = self.extract_table_structure(processed_image)
+                else:
+                    text = self.image_to_text(processed_image)
+
                 if text.strip():
                     extracted_texts.append(text)
 
@@ -167,6 +172,14 @@ class OCRProcessor:
         if not text:
             return ""
 
+        # Fix Hungarian number format issues FIRST (before splitting lines)
+        import re
+        # Only fix spaces in price-like patterns (1 244,00 → 1244,00)
+        # Match: digit + space + 3 digits + comma/period + 2 digits
+        text = re.sub(r'(\d)[\s\u00A0\u202F\u2009]+(\d{3}[,.])', r'\1\2', text)
+        # Also handle thousand separators without decimals (1 244 → 1244) but only for 3-4 digit groups
+        text = re.sub(r'(\d)[\s\u00A0\u202F\u2009]+(\d{3})(?=\D|$)', r'\1\2', text)
+
         # Remove excessive whitespace
         lines = [line.strip() for line in text.split('\n')]
         lines = [line for line in lines if line]  # Remove empty lines
@@ -201,9 +214,10 @@ class OCRProcessor:
                 re.search(r'\d{4}[-./]\d{1,2}[-./]\d{1,2}', line),  # Dates
                 re.search(r'invoice|receipt|bill|számlaszám', line_lower),  # Invoice markers
                 re.search(r'\d+[.,]\d+', line),  # Numbers (prices)
-                re.search(r'tax|vat|áfa', line_lower),  # Tax info
-                re.search(r'total|subtotal|összesen', line_lower),  # Totals
+                re.search(r'tax|vat|áfa|nettó|bruttó', line_lower),  # Tax info and totals
+                re.search(r'total|subtotal|összesen|mennyiség', line_lower),  # Totals and quantity
                 re.search(r'[A-Z]{2,}[-\s]?\d{8,}', line),  # Tax IDs
+                re.search(r'egységár|unit', line_lower),  # Unit price headers
             ])
 
             if not should_skip or has_important_data:
@@ -213,6 +227,51 @@ class OCRProcessor:
         cleaned = '\n'.join(filtered_lines)
 
         return cleaned
+
+    def extract_table_structure(self, image: Image.Image) -> str:
+        """
+        Extract only table rows (lines with multiple numbers) for items
+
+        Args:
+            image: PIL Image
+
+        Returns:
+            Filtered text with only table-like rows
+        """
+        try:
+            import re
+
+            # Get full text first
+            full_text = self.image_to_text(image)
+
+            # Filter to lines that look like table rows
+            # Must have: at least 3 numbers with commas/periods (prices)
+            table_lines = []
+            for line in full_text.split('\n'):
+                # Count price-like patterns in the line
+                price_count = len(re.findall(r'\d+[.,]\d+', line))
+
+                # Skip summary/total rows (mostly numbers, no real text)
+                words = re.findall(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]{3,}', line)
+                if price_count >= 3 and len(words) == 0:
+                    # Line with only numbers and no words = summary row, skip it
+                    continue
+
+                # If line has 3+ prices and some text, it's likely a data row
+                if price_count >= 3:
+                    table_lines.append(line)
+                # Also keep header row if it has quantity/price keywords
+                elif re.search(r'mennyiség|egységár|nettó|bruttó|quantity|unit|net|gross', line, re.IGNORECASE):
+                    table_lines.append(line)
+
+            filtered_text = '\n'.join(table_lines)
+            logger.info(f"Filtered to {len(table_lines)} table rows from {len(full_text.split(chr(10)))} total lines")
+
+            return filtered_text if filtered_text else full_text
+
+        except Exception as e:
+            logger.warning(f"Table filtering failed, using plain text: {str(e)}")
+            return self.image_to_text(image)
 
     def get_text_confidence(self, image: Image.Image) -> float:
         """

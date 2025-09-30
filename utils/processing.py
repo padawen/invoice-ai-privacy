@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from .ocr import OCRProcessor
 from .llm import OllamaClient
+from .vision import VisionProcessor
 from .progress import progress_tracker
 from config import Config
 
@@ -17,6 +18,10 @@ class InvoiceProcessor:
         self.config = config or Config()
         self.ocr_processor = OCRProcessor(config)
         self.llm_client = OllamaClient(config)
+        self.vision_processor = VisionProcessor(config)
+
+        # Use vision mode if enabled
+        self.use_vision = self.config.USE_VISION_MODEL
 
     def health_check(self) -> Dict[str, Any]:
         """Check health of all components"""
@@ -53,17 +58,47 @@ class InvoiceProcessor:
             Structured invoice data dictionary matching OpenAI format
         """
         processing_start = datetime.utcnow()
-        logger.info(f"Starting processing of {filename}")
+        logger.info(f"Starting processing of {filename} (vision mode: {self.use_vision})")
 
         try:
             # Update progress: Setup complete (5%)
             if job_id:
-                progress_tracker.update_progress(job_id, "upload", 5, "File uploaded, starting OCR extraction", "processing")
+                progress_tracker.update_progress(job_id, "upload", 5, "File uploaded, starting extraction", "processing")
 
                 # Check for cancellation
                 if progress_tracker.is_cancelled(job_id):
                     logger.info(f"Job {job_id} was cancelled during setup")
                     return self.get_cancellation_result(filename, job_id)
+
+            # If vision mode enabled, use vision processor directly
+            if self.use_vision:
+                logger.info("Using vision-based extraction...")
+                if job_id:
+                    progress_tracker.update_progress(job_id, "vision", 10, "Starting vision processing", "processing")
+
+                vision_start = datetime.utcnow()
+                structured_data = self.vision_processor.extract_invoice_data(pdf_bytes, job_id)
+                vision_duration = (datetime.utcnow() - vision_start).total_seconds()
+
+                logger.info(f"Vision processing completed in {vision_duration:.2f}s")
+                if job_id:
+                    progress_tracker.update_progress(job_id, "vision", 90, "Vision processing completed", "processing")
+                    progress_tracker.update_stage_duration(job_id, "vision", vision_duration)
+
+                # Apply fixes
+                if "invoice_data" in structured_data and isinstance(structured_data["invoice_data"], list):
+                    structured_data["invoice_data"] = self.fix_net_gross_confusion(structured_data["invoice_data"])
+
+                # Post-process and complete
+                final_result = self.post_process_result(structured_data)
+                processing_duration = (datetime.utcnow() - processing_start).total_seconds()
+
+                if job_id:
+                    progress_tracker.update_progress(job_id, "complete", 100, "Processing completed", "completed")
+                    progress_tracker.set_result(job_id, final_result)
+
+                logger.info(f"Processing completed successfully in {processing_duration:.2f}s")
+                return final_result
 
             # Step 1: Extract text using OCR (5% - 20%)
             logger.info("Step 1: OCR text extraction...")
@@ -99,28 +134,35 @@ class InvoiceProcessor:
             # Always use chunking strategy for better speed and accuracy
             logger.info(f"Extracting invoice data in 2 chunks ({len(extracted_text)} chars)")
 
-            # Chunk 1: Extract metadata
+            # Chunk 1: Extract metadata (use plain OCR text)
             if job_id:
                 progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata", "processing")
 
             metadata_prompt = self.llm_client.create_extraction_prompt(extracted_text, "metadata")
             metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
 
-            # Chunk 2: Extract line items
+            # Chunk 2: Extract line items (use structured OCR for table)
             if job_id:
-                progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items", "processing")
+                progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items with structured OCR", "processing")
                 if progress_tracker.is_cancelled(job_id):
                     logger.info(f"Job {job_id} was cancelled during chunked processing")
                     return self.get_cancellation_result(filename, job_id)
 
-            items_prompt = self.llm_client.create_extraction_prompt(extracted_text, "items")
+            # Re-OCR with table structure for items extraction
+            structured_text = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, structured=True)
+            logger.info(f"Re-extracted structured text for items ({len(structured_text)} chars)")
+
+            items_prompt = self.llm_client.create_extraction_prompt(structured_text, "items")
             items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=True)
+
+            # Store the table text for validation
+            self._table_text = structured_text
 
             # Combine results
             if isinstance(items_data, list):
-                metadata["invoice_data"] = items_data
+                metadata["invoice_data"] = self.fix_net_gross_confusion(items_data)
             elif isinstance(items_data, dict) and "invoice_data" in items_data:
-                metadata["invoice_data"] = items_data["invoice_data"]
+                metadata["invoice_data"] = self.fix_net_gross_confusion(items_data["invoice_data"])
             else:
                 metadata["invoice_data"] = []
 
@@ -172,6 +214,43 @@ class InvoiceProcessor:
 
             # Return fallback structure with error info
             return self.get_error_fallback(error_msg, filename)
+
+    def fix_net_gross_confusion(self, items: list) -> list:
+        """
+        Fix items where LLM confused net and gross columns
+        If gross < net, they're likely swapped
+        """
+        import re
+
+        fixed_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                fixed_items.append(item)
+                continue
+
+            try:
+                # Extract numeric values
+                net_str = re.sub(r'[^\d,.-]', '', str(item.get("net", "")))
+                gross_str = re.sub(r'[^\d,.-]', '', str(item.get("gross", "")))
+
+                if not net_str or not gross_str:
+                    fixed_items.append(item)
+                    continue
+
+                # Convert to float
+                net_val = float(net_str.replace(',', '.'))
+                gross_val = float(gross_str.replace(',', '.'))
+
+                # Check if they need swapping (gross should be > net, unless it's a discount/negative)
+                if gross_val < net_val and gross_val > 0 and net_val > 0:
+                    logger.warning(f"Item '{item.get('name', '')[:30]}': gross ({gross_val}) < net ({net_val}) - LLM column confusion, values may be incorrect")
+
+            except Exception as e:
+                logger.debug(f"Could not validate net/gross for item: {e}")
+
+            fixed_items.append(item)
+
+        return fixed_items
 
     def post_process_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
