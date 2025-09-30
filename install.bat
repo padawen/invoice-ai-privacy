@@ -3,7 +3,7 @@ echo ========================================
 echo    Invoice AI Privacy - Installer
 echo    Full automatic installation
 echo ========================================
-echo.
+echo:
 
 REM Check if running as administrator
 net session >nul 2>&1
@@ -16,7 +16,7 @@ if %errorLevel% == 0 (
     exit /b 1
 )
 
-echo.
+echo:
 echo Step 1: Installing Python
 echo -------------------------
 python --version >nul 2>&1
@@ -31,7 +31,7 @@ if errorlevel 1 (
     echo [OK] Python already installed
 )
 
-echo.
+echo:
 echo Step 2: Installing Ollama
 echo -------------------------
 if exist "%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" (
@@ -45,7 +45,7 @@ if exist "%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" (
     echo [OK] Ollama installed
 )
 
-echo.
+echo:
 echo Step 3: Installing Git (if needed)
 echo ----------------------------------
 git --version >nul 2>&1
@@ -60,7 +60,7 @@ if errorlevel 1 (
     echo [OK] Git already installed
 )
 
-echo.
+echo:
 echo Step 4: Installing ngrok (optional)
 echo -----------------------------------
 where ngrok >nul 2>&1
@@ -74,7 +74,7 @@ if errorlevel 1 (
     echo [OK] ngrok already available
 )
 
-echo.
+echo:
 echo Step 5: Setting up Python virtual environment
 echo ---------------------------------------------
 if not exist "venv" (
@@ -89,7 +89,7 @@ echo [SETUP] Installing Python dependencies...
 pip install --upgrade pip
 pip install -r requirements.txt
 
-echo.
+echo:
 echo Step 6: Setting up Ollama service
 echo ---------------------------------
 echo [START] Starting Ollama service...
@@ -101,11 +101,11 @@ echo This is a large file (~4GB) and may take 10-30 minutes depending on your in
 echo Please be patient...
 "%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe" pull qwen2.5:7b-instruct-q4_K_M
 
-echo.
+echo:
 echo ========================================
 echo    Installation Complete!
 echo ========================================
-echo.
+echo:
 echo What was installed:
 echo - Python 3.11 (if not already present)
 echo - Ollama AI runtime
@@ -113,12 +113,16 @@ echo - Git (if not already present)
 echo - ngrok tunneling tool
 echo - Qwen2.5 7B Instruct Q4 model (~4GB)
 echo - Python virtual environment with dependencies
-echo.
+echo:
 echo Next steps:
 echo 1. Copy .env.example to .env
 echo 2. Edit .env and set your API_KEY
 echo 3. Run launch.bat to start the service
-echo.
+echo:
 echo IMPORTANT: Restart your computer to ensure all PATH changes take effect!
-echo.
+echo:
+echo [DEBUG] Installation finished - press any key to close
+pause
+echo [DEBUG] Script completed successfully
+echo [DEBUG] You can now close this window
 pause

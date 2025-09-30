@@ -3,7 +3,7 @@ echo ========================================
 echo    Invoice AI Privacy - Launcher
 echo    Starting local AI service
 echo ========================================
-echo.
+echo:
 
 REM Set environment variables
 set OLLAMA_HOST=localhost:11434
@@ -21,7 +21,7 @@ echo    Model: Qwen2.5 7B Instruct Q4 (optimal speed/quality balance)
 echo    OCR: Tesseract (English)
 echo    API Key: [From .env file]
 echo    Ports: 5000 (Flask), 11434 (Ollama)
-echo.
+echo:
 
 REM Find Ollama executable
 set OLLAMA_PATH=%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe
@@ -108,10 +108,10 @@ echo [INFO] Health check: http://localhost:5000/health
 if exist ngrok.exe (
     echo [INFO] Ngrok tunnel: check http://localhost:4040 for public URL
 )
-echo.
+echo:
 echo [READY] Invoice AI Privacy is ready!
 echo [READY] Press Ctrl+C to stop the service
-echo.
+echo:
 
 python app.py
 goto :eof
