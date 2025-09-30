@@ -112,8 +112,9 @@ class OllamaClient:
                     "options": {
                         "temperature": 0.1,
                         "top_p": 0.9,
-                        "num_predict": 1024,
+                        "num_predict": 512,
                         "num_ctx": 2048,
+                        "num_gpu": 1,
                         "num_thread": 8,
                         "repeat_penalty": 1.1,
                         "top_k": 40

@@ -1,6 +1,6 @@
 # Invoice AI Privacy
 
-A completely local invoice processing service using Ollama (Mistral 7B Instruct) for AI-powered data extraction. No cloud dependencies, full privacy.
+A completely local invoice processing service using Ollama (Qwen2.5 7B Instruct Q4) for AI-powered data extraction. No cloud dependencies, full privacy.
 
 ## Features
 
@@ -35,16 +35,28 @@ A completely local invoice processing service using Ollama (Mistral 7B Instruct)
    # Edit .env and set your API_KEY
    ```
 
-3. **Run the Service**
+3. **Install Everything (First Time)**
    ```bash
-   # Windows: Just double-click or run
-   start-native.bat
+   # Right-click and "Run as Administrator"
+   install.bat
 
-   # The script will:
-   # - Check/start Ollama
-   # - Download Mistral 7B Instruct model
-   # - Setup Python environment
-   # - Start ngrok tunnel
+   # This will install:
+   # - Python 3.11
+   # - Ollama AI runtime
+   # - Git and ngrok
+   # - Download Qwen2.5 7B Instruct Q4 model (~4GB)
+   # - Setup Python virtual environment
+   ```
+
+4. **Launch the Service**
+   ```bash
+   # Regular run (after installation)
+   launch.bat
+
+   # The launcher will:
+   # - Start Ollama service
+   # - Verify model availability
+   # - Start ngrok tunnel (optional)
    # - Launch Flask API
    ```
 
@@ -113,10 +125,11 @@ python app.py
 
 ## Model Information
 
-- **Mistral 7B Instruct**: Superior multilingual support for Hungarian and English invoices
-- **CPU Inference**: Works on Intel/AMD CPUs, no GPU required
+- **Qwen2.5 7B Instruct Q4**: Optimal balance of speed and accuracy for invoice processing
+- **GPU Accelerated**: Optimized for RTX 2070+ GPUs with 4-6GB VRAM
 - **Privacy**: Models downloaded locally, no external API calls
 - **Cancellation**: Real-time processing cancellation with streaming responses
+- **Performance**: 3-6 second response times on GPU, excellent JSON output quality
 
 ## Troubleshooting
 
