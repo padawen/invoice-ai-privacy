@@ -180,6 +180,10 @@ class OCRProcessor:
         # Also handle thousand separators without decimals (1 244 → 1244) but only for 3-4 digit groups
         text = re.sub(r'(\d)[\s\u00A0\u202F\u2009]+(\d{3})(?=\D|$)', r'\1\2', text)
 
+        # Fix concatenated numbers (e.g., "1236,00236,00" -> "1236,00 236,00")
+        # Pattern: number with 2 decimal places followed immediately by another digit
+        text = re.sub(r'(\d+[,.]\d{2})(\d)', r'\1 \2', text)
+
         # Remove excessive whitespace
         lines = [line.strip() for line in text.split('\n')]
         lines = [line for line in lines if line]  # Remove empty lines
@@ -230,18 +234,18 @@ class OCRProcessor:
 
     def extract_table_structure(self, image: Image.Image) -> str:
         """
-        Extract only table rows (lines with multiple numbers) for items
+        Extract table rows with better filtering
 
         Args:
             image: PIL Image
 
         Returns:
-            Filtered text with only table-like rows
+            Filtered text with table data rows
         """
         try:
             import re
 
-            # Get full text first
+            # Get full text first (plain OCR)
             full_text = self.image_to_text(image)
 
             # Filter to lines that look like table rows
@@ -253,21 +257,27 @@ class OCRProcessor:
 
                 # Skip summary/total rows (mostly numbers, no real text)
                 words = re.findall(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]{3,}', line)
+
+                # Skip if only numbers (summary row)
                 if price_count >= 3 and len(words) == 0:
-                    # Line with only numbers and no words = summary row, skip it
                     continue
 
                 # If line has 3+ prices and some text, it's likely a data row
-                if price_count >= 3:
+                if price_count >= 3 and len(words) > 0:
                     table_lines.append(line)
                 # Also keep header row if it has quantity/price keywords
-                elif re.search(r'mennyiség|egységár|nettó|bruttó|quantity|unit|net|gross', line, re.IGNORECASE):
+                elif re.search(r'pozíció|leírás|mennyiség|egységár|nettó|bruttó|quantity|unit|net|gross', line, re.IGNORECASE):
                     table_lines.append(line)
 
             filtered_text = '\n'.join(table_lines)
             logger.info(f"Filtered to {len(table_lines)} table rows from {len(full_text.split(chr(10)))} total lines")
 
-            return filtered_text if filtered_text else full_text
+            # If we got no table lines, return full text as fallback
+            if not filtered_text:
+                logger.warning("No table rows found, returning full text")
+                return full_text
+
+            return filtered_text
 
         except Exception as e:
             logger.warning(f"Table filtering failed, using plain text: {str(e)}")

@@ -7,7 +7,7 @@ echo:
 
 REM Set environment variables
 set OLLAMA_HOST=localhost:11434
-set OLLAMA_MODEL=qwen2.5:3b-instruct-q4_K_M
+set OLLAMA_MODEL=gemma2:9b
 set OLLAMA_TIMEOUT=300
 set DEBUG=false
 set PORT=5000
@@ -23,12 +23,12 @@ if not errorlevel 1 (
     set MODEL_NAME=LLaVA 7B Vision
 ) else (
     set VISION_MODE=disabled
-    set MODEL_NAME=Qwen2.5 3B Instruct Q4
+    set MODEL_NAME=Gemma2 9B
 )
 
 echo Configuration:
 echo    Processing Mode: Vision=%VISION_MODE%
-echo    Text Model: Qwen2.5 3B Instruct Q4
+echo    Text Model: Gemma2 9B
 echo    Vision Model: LLaVA 7B ^(for image processing^)
 echo    OCR: Tesseract ^(Hungarian + English^)
 echo    API Key: [From .env file]
@@ -97,8 +97,8 @@ if "%VISION_MODE%"=="enabled" (
     )
     echo [OK] Vision model ready
 ) else (
-    echo [MODEL] Verifying Qwen2.5 3B Instruct Q4 model...
-    "%OLLAMA_EXE%" list | findstr "qwen2.5:3b-instruct-q4_K_M" >nul
+    echo [MODEL] Verifying Gemma2 9B model...
+    "%OLLAMA_EXE%" list | findstr "gemma2:9b" >nul
     if errorlevel 1 (
         echo [ERROR] Model not found. Please run install.bat first.
         pause

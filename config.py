@@ -13,7 +13,7 @@ class Config:
 
     # Ollama settings
     OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:3b-instruct-q4_K_M')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'gemma2:9b')
     OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes
 
     # Vision model settings
@@ -47,15 +47,15 @@ class Config:
 
 class DevelopmentConfig(Config):
     DEBUG = True
-    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Fast model for development
+    OLLAMA_MODEL = 'gemma2:9b'  # Google Gemma2 9B for development
 
 class ProductionConfig(Config):
     DEBUG = False
-    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Fast model for production
+    OLLAMA_MODEL = 'gemma2:9b'  # Google Gemma2 9B for production
 
 class TestingConfig(Config):
     TESTING = True
-    OLLAMA_MODEL = 'qwen2.5:3b-instruct-q4_K_M'  # Consistent model for testing
+    OLLAMA_MODEL = 'gemma2:9b'  # Google Gemma2 9B for testing
 
 # Config mapping
 config = {

@@ -61,9 +61,12 @@ class InvoiceProcessor:
         logger.info(f"Starting processing of {filename} (vision mode: {self.use_vision})")
 
         try:
-            # Update progress: Setup complete (5%)
+            # Update progress: Upload complete
+            upload_start = processing_start
             if job_id:
-                progress_tracker.update_progress(job_id, "upload", 5, "File uploaded, starting extraction", "processing")
+                progress_tracker.update_progress(job_id, "upload", 100, "File uploaded successfully", "processing")
+                upload_duration = (datetime.utcnow() - upload_start).total_seconds()
+                progress_tracker.update_stage_duration(job_id, "upload", upload_duration)
 
                 # Check for cancellation
                 if progress_tracker.is_cancelled(job_id):

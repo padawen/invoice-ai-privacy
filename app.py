@@ -1,7 +1,8 @@
 import os
 import logging
 import threading
-from flask import Flask, request, jsonify
+import time
+from flask import Flask, request, jsonify, Response, stream_with_context
 from werkzeug.utils import secure_filename
 from utils.processing import InvoiceProcessor
 from utils.progress import progress_tracker
@@ -13,6 +14,10 @@ logging.basicConfig(
     format='%(levelname)s:%(name)s:%(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Suppress werkzeug logging for progress endpoints to reduce noise
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)  # Only log errors from Flask, not every request
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -40,13 +45,19 @@ def process_invoice():
     try:
         # Check API key if configured
         if app.config.get('API_KEY'):
+            # Support both x-api-key and Authorization: Bearer headers
+            api_key = request.headers.get('x-api-key')
             auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
-            token = auth_header.split(' ')[1]
-            if token != app.config['API_KEY']:
-                return jsonify({"error": "Invalid API key"}), 401
+            if api_key:
+                if api_key != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            elif auth_header and auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+                if token != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            else:
+                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
         # Check if file is in request
         if 'file' not in request.files:
@@ -109,22 +120,31 @@ def process_invoice():
 
 @app.route('/progress/<job_id>', methods=['GET'])
 def get_progress(job_id):
-    """Get progress for a specific job"""
+    """Get progress for a specific job (polling - use SSE instead to reduce requests)"""
     try:
         # Check API key if configured
         if app.config.get('API_KEY'):
+            # Support both x-api-key and Authorization: Bearer headers
+            api_key = request.headers.get('x-api-key')
             auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
-            token = auth_header.split(' ')[1]
-            if token != app.config['API_KEY']:
-                return jsonify({"error": "Invalid API key"}), 401
+            if api_key:
+                # x-api-key header
+                if api_key != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            elif auth_header and auth_header.startswith('Bearer '):
+                # Authorization: Bearer header
+                token = auth_header.split(' ')[1]
+                if token != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            else:
+                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
         progress = progress_tracker.get_progress(job_id)
         if progress is None:
             return jsonify({"error": "Job not found"}), 404
 
+        # Don't log these requests - they're frequent polling
         return jsonify(progress), 200
 
     except Exception as e:
@@ -134,19 +154,78 @@ def get_progress(job_id):
             "details": str(e)
         }), 500
 
+@app.route('/progress-stream/<job_id>', methods=['GET'])
+def progress_stream(job_id):
+    """Server-Sent Events stream for real-time progress updates (recommended over polling)"""
+    def generate():
+        import json
+
+        # Check API key - support both x-api-key and Authorization: Bearer headers
+        if app.config.get('API_KEY'):
+            api_key = request.headers.get('x-api-key')
+            auth_header = request.headers.get('Authorization')
+
+            valid_auth = False
+            if api_key and api_key == app.config['API_KEY']:
+                valid_auth = True
+            elif auth_header and auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+                if token == app.config['API_KEY']:
+                    valid_auth = True
+
+            if not valid_auth:
+                yield f"event: error\ndata: {json.dumps({'error': 'Invalid authorization'})}\n\n"
+                return
+
+        # Stream progress updates
+        last_progress = None
+        max_wait = 300  # 5 minutes max
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait:
+            progress = progress_tracker.get_progress(job_id)
+
+            if progress is None:
+                yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
+                break
+
+            # Only send updates when progress changes
+            if progress != last_progress:
+                yield f"event: progress\ndata: {json.dumps(progress)}\n\n"
+                last_progress = progress
+
+            # Check if done
+            if progress.get('status') in ['completed', 'failed']:
+                yield f"event: complete\ndata: {json.dumps(progress)}\n\n"
+                break
+
+            time.sleep(0.5)  # Check every 500ms
+
+        # Timeout
+        if time.time() - start_time >= max_wait:
+            yield f"event: timeout\ndata: {json.dumps({'error': 'Stream timeout'})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
 @app.route('/cancel-job/<job_id>', methods=['DELETE'])
 def cancel_job(job_id):
     """Cancel a processing job"""
     try:
         # Check API key if configured
         if app.config.get('API_KEY'):
+            # Support both x-api-key and Authorization: Bearer headers
+            api_key = request.headers.get('x-api-key')
             auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
-            token = auth_header.split(' ')[1]
-            if token != app.config['API_KEY']:
-                return jsonify({"error": "Invalid API key"}), 401
+            if api_key:
+                if api_key != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            elif auth_header and auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+                if token != app.config['API_KEY']:
+                    return jsonify({"error": "Invalid API key"}), 401
+            else:
+                return jsonify({"error": "Missing or invalid authorization header"}), 401
 
         success = progress_tracker.cancel_job(job_id)
         if not success:

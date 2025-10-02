@@ -441,9 +441,14 @@ class OllamaClient:
         """
         if chunk_type == "metadata":
             # Extract only metadata (seller, buyer, dates)
-            prompt = f"""Extract invoice metadata. For buyer and seller:
-- name: company/person name ONLY (exclude address)
-- address: full address separately
+            prompt = f"""Extract invoice metadata from the text below.
+
+CRITICAL RULES:
+1. Seller name: Extract the COMPANY NAME ONLY (like "Notino, s.r.o." or "ABC Kft."). Do NOT include labels like "Szállító:", "Seller:", or address information.
+2. Buyer name: Extract PERSON/COMPANY NAME ONLY. Do NOT include address.
+3. Invoice number: Look for "Számlaszám:" or "Invoice number:" - extract ONLY the number after this label. NOT the order number (Rendelés sz).
+4. Tax ID: Look for registry/tax ID, typically 8+ digits. NOT the invoice number.
+5. Dates: Convert all dates to YYYY-MM-DD format (e.g., "16.05.2025" becomes "2025-05-16").
 
 Return JSON:
 {{"seller":{{"name":"","address":"","tax_id":"","email":"","phone":""}},"buyer":{{"name":"","address":"","tax_id":""}},"invoice_number":"","issue_date":"YYYY-MM-DD","fulfillment_date":"YYYY-MM-DD","due_date":"YYYY-MM-DD","payment_method":"","currency":"HUF"}}
@@ -454,27 +459,30 @@ Invoice text:
 JSON:"""
         elif chunk_type == "items":
             # Extract only line items
-            prompt = f"""Extract invoice line items. For each data row, find ALL prices/numbers in the row, then:
-- name: item description (text at start)
-- quantity: first small number (usually 1-10)
-- unit_price: first large price
-- net: middle price (net subtotal before tax)
-- gross: LAST price in the row (gross total with tax)
+            prompt = f"""Extract ALL invoice line items from the table below. Read each row carefully.
 
-The last price on each row is always the gross total. Ignore any tax/VAT columns in between.
+EXTRACTION RULES:
+1. name: Product/service description (text at the beginning of the row)
+2. quantity: How many items (small number, usually 1-10, NOT long barcodes)
+3. unit_price: Price for one unit
+4. net: Subtotal before tax
+5. gross: FINAL total with tax (the LAST price number in each row)
 
-Example row: "Item name 123 1 1000,00 1000,00 27% 270,00 1270,00"
-- name: "Item name"
-- quantity: "1"
-- unit_price: "1000,00"
-- net: "1000,00"
-- gross: "1270,00" (the LAST number)
+CRITICAL RULES:
+- Extract EVERY product row, don't skip any
+- Gross is ALWAYS the rightmost/last price in the row
+- Quantity is typically 1, 2, 3, etc. (NOT 4744183012622 or 27%)
+- Handle negative values for discounts
+- If row has multiple numbers, the LAST one is gross
 
-Return JSON:
-[{{"name":"","quantity":"","unit_price":"","net":"","gross":"","currency":"HUF"}}]
+Example: "Product name 4744183012622 1 1244,00 1244,00 27,000% 336,00 1580,00"
+→ {{"name":"Product name", "quantity":"1", "unit_price":"1244.00", "net":"1244.00", "gross":"1580.00"}}
 
-Table:
+Table data:
 {ocr_text}
+
+Return JSON array with ALL items:
+[{{"name":"","quantity":"","unit_price":"","net":"","gross":"","currency":"HUF"}}]
 
 JSON:"""
         else:
