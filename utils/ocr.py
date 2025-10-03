@@ -121,7 +121,7 @@ class OCRProcessor:
             # Convert to grayscale
             gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
 
-            # Apply simple threshold (faster than OTSU)
+            # Apply simple threshold (faster and more reliable than complex preprocessing)
             _, threshold = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
 
             # Convert back to PIL
@@ -158,6 +158,25 @@ class OCRProcessor:
         except Exception as e:
             logger.error(f"Text extraction from image failed: {str(e)}")
             return ""
+
+    def is_barcode(self, number_str: str) -> bool:
+        """
+        Detect if a number string is likely a barcode (EAN-8, EAN-13, UPC, etc.)
+
+        Args:
+            number_str: Number string to check
+
+        Returns:
+            True if likely a barcode, False otherwise
+        """
+        import re
+        # Remove any non-digit characters
+        digits_only = re.sub(r'\D', '', number_str)
+
+        # Common barcode lengths: 8 (EAN-8), 12 (UPC), 13 (EAN-13), 14 (ITF-14)
+        barcode_lengths = [8, 12, 13, 14]
+
+        return len(digits_only) in barcode_lengths and digits_only.isdigit()
 
     def clean_text(self, text: str) -> str:
         """
@@ -234,29 +253,43 @@ class OCRProcessor:
 
     def extract_table_structure(self, image: Image.Image) -> str:
         """
-        Extract table rows with better filtering
+        Extract table rows with row continuation capture for multi-line names
 
         Args:
             image: PIL Image
 
         Returns:
-            Filtered text with table data rows
+            Filtered text with table data rows (including continuation lines)
         """
         try:
             import re
 
             # Get full text first (plain OCR)
             full_text = self.image_to_text(image)
+            lines = full_text.split('\n')
 
-            # Filter to lines that look like table rows
-            # Must have: at least 3 numbers with commas/periods (prices)
+            # Filter to lines that look like table rows + capture continuations
             table_lines = []
-            for line in full_text.split('\n'):
+            skip_next = 0  # Track lines to skip (already appended as continuations)
+
+            for i, line in enumerate(lines):
+                # Skip if this line was already appended as a continuation
+                if skip_next > 0:
+                    skip_next -= 1
+                    continue
+
                 # Count price-like patterns in the line
                 price_count = len(re.findall(r'\d+[.,]\d+', line))
 
                 # Skip summary/total rows (mostly numbers, no real text)
                 words = re.findall(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]{3,}', line)
+
+                # Check if line is a header/summary (skip from continuation capture)
+                is_header_or_summary = re.search(
+                    r'^\s*(total|nettó|bruttó|áfa|összesen|sum|subtotal)\s*:?\s*\d',
+                    line,
+                    re.IGNORECASE
+                )
 
                 # Skip if only numbers (summary row)
                 if price_count >= 3 and len(words) == 0:
@@ -264,17 +297,47 @@ class OCRProcessor:
 
                 # If line has 3+ prices and some text, it's likely a data row
                 if price_count >= 3 and len(words) > 0:
-                    table_lines.append(line)
+                    combined_line = line
+
+                    # Capture next 1-2 lines as name continuation if they're text-only
+                    continuation_count = 0
+                    for j in range(1, 3):  # Check next 2 lines
+                        if i + j >= len(lines):
+                            break
+
+                        next_line = lines[i + j].strip()
+                        if not next_line:
+                            continue
+
+                        # Check if next line is text-only (no prices, not header/summary)
+                        next_prices = len(re.findall(r'\d+[.,]\d+', next_line))
+                        next_words = re.findall(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]{3,}', next_line)
+                        is_next_header = re.search(
+                            r'(total|nettó|bruttó|áfa|összesen|sum|subtotal|pozíció|leírás)',
+                            next_line,
+                            re.IGNORECASE
+                        )
+
+                        # Append if: has text, no prices, not header/summary
+                        if next_prices == 0 and len(next_words) > 0 and not is_next_header:
+                            combined_line += " " + next_line
+                            continuation_count += 1
+                        else:
+                            break  # Stop at first non-text line
+
+                    table_lines.append(combined_line)
+                    skip_next = continuation_count
+
                 # Also keep header row if it has quantity/price keywords
                 elif re.search(r'pozíció|leírás|mennyiség|egységár|nettó|bruttó|quantity|unit|net|gross', line, re.IGNORECASE):
                     table_lines.append(line)
 
             filtered_text = '\n'.join(table_lines)
-            logger.info(f"Filtered to {len(table_lines)} table rows from {len(full_text.split(chr(10)))} total lines")
+            logger.info(f"Filtered to {len(table_lines)} table rows from {len(lines)} total lines")
 
-            # If we got no table lines, return full text as fallback
-            if not filtered_text:
-                logger.warning("No table rows found, returning full text")
+            # If we got too few table lines (< 2), fallback to full text
+            if len(table_lines) < 2:
+                logger.warning(f"Too few table rows ({len(table_lines)}); falling back to full text for items extraction")
                 return full_text
 
             return filtered_text

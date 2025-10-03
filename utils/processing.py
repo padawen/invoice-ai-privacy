@@ -1,12 +1,15 @@
 import os
 import logging
 import uuid
-from typing import Dict, Any, Optional
+import re
+import unicodedata
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from .ocr import OCRProcessor
 from .llm import OllamaClient
 from .vision import VisionProcessor
 from .progress import progress_tracker
+from .price_mapper import price_mapper
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -156,7 +159,8 @@ class InvoiceProcessor:
             logger.info(f"Re-extracted structured text for items ({len(structured_text)} chars)")
 
             items_prompt = self.llm_client.create_extraction_prompt(structured_text, "items")
-            items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=True)
+            # Changed to expect_array=False since items now returns {"invoice_data": [...]}
+            items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=False)
 
             # Store the table text for validation
             self._table_text = structured_text
@@ -280,17 +284,163 @@ class InvoiceProcessor:
 
             # Clean and validate numeric values in invoice_data
             if "invoice_data" in data and isinstance(data["invoice_data"], list):
-                data["invoice_data"] = [
+                # First clean items
+                cleaned_items = [
                     self.clean_invoice_item(item)
                     for item in data["invoice_data"]
                     if isinstance(item, dict)
                 ]
+
+                # Then validate/fix with VAT-aware price mapper
+                # Use table text if available for better remapping
+                table_text = getattr(self, '_table_text', '')
+                table_lines = self._prepare_table_lines(table_text)
+                row_matches = self._match_items_to_table_rows(cleaned_items, table_lines)
+
+                validated_items = []
+                for idx, item in enumerate(cleaned_items):
+                    row_text = row_matches[idx] if idx < len(row_matches) else ''
+                    validated_item = price_mapper.validate_and_fix_item(item, row_text)
+                    validated_items.append(validated_item)
+
+                data['invoice_data'] = validated_items
+
+                # Validate sum consistency
+                validation = self.validate_sum_consistency(data["invoice_data"])
+                if validation["warnings"]:
+                    for warning in validation["warnings"]:
+                        logger.warning(f"Sum consistency: {warning}")
+
+                # Add validation metadata
+                if "_processing_metadata" not in data:
+                    data["_processing_metadata"] = {}
+                data["_processing_metadata"]["validation"] = {
+                    "calculated_net_total": validation["total_net"],
+                    "calculated_gross_total": validation["total_gross"],
+                    "warnings": validation["warnings"]
+                }
+
+            # Auto-detect and set currency if missing
+            if not data.get("currency") or data.get("currency") == "":
+                # Check invoice_data for currency
+                if "invoice_data" in data and data["invoice_data"]:
+                    for item in data["invoice_data"]:
+                        if item.get("currency"):
+                            data["currency"] = item["currency"]
+                            break
+                # Default to HUF if still not found
+                if not data.get("currency"):
+                    data["currency"] = "HUF"
 
             return data
 
         except Exception as e:
             logger.error(f"Post-processing failed: {str(e)}")
             return self.get_error_fallback(f"Post-processing error: {str(e)}")
+
+
+    def _prepare_table_lines(self, table_text: str) -> List[str]:
+        if not table_text:
+            return []
+        return [line.strip() for line in table_text.splitlines() if line.strip()]
+
+    def _match_items_to_table_rows(self, items: List[Dict[str, Any]], table_lines: List[str]) -> List[str]:
+        if not items:
+            return []
+        if not table_lines:
+            return [""] * len(items)
+
+        matches: List[str] = []
+        used_indices: set = set()
+
+        for item in items:
+            idx = self._find_best_table_line_index(item, table_lines, used_indices)
+            if idx is None:
+                matches.append("")
+            else:
+                used_indices.add(idx)
+                matches.append(table_lines[idx])
+        return matches
+
+    def _find_best_table_line_index(self, item: Dict[str, Any], table_lines: List[str], used_indices: set) -> Optional[int]:
+        best_idx = None
+        best_score = float('-inf')
+
+        for idx, line in enumerate(table_lines):
+            score = self._score_table_line(item, line)
+            if idx in used_indices:
+                score -= 0.5  # Prefer unused lines but allow reuse
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        if best_idx is None or best_score <= 0:
+            return None
+        return best_idx
+
+    def _score_table_line(self, item: Dict[str, Any], line: str) -> float:
+        if not line:
+            return float('-inf')
+
+        score = 0.0
+        candidates = price_mapper.extract_price_candidates(line)
+        line_numbers = [abs(num) for num in candidates.get('prices', []) if isinstance(num, (int, float))]
+        item_numbers = [abs(num) for num in self._extract_item_numbers(item)]
+
+        match_count = 0
+        for target in item_numbers:
+            if target == 0:
+                continue
+            for num in line_numbers:
+                if abs(num - target) <= 1.0:
+                    match_count += 1
+                    break
+        score += match_count * 5
+
+        line_normalized = self._normalize_text(line)
+        item_tokens = self._extract_name_tokens(item.get('name', ''))
+        if item_tokens:
+            token_hits = sum(1 for token in item_tokens if token in line_normalized)
+            score += token_hits * 1.5
+
+        quantity = item.get('quantity')
+        try:
+            quantity_val = float(str(quantity).replace(',', '.')) if quantity not in (None, '') else None
+        except ValueError:
+            quantity_val = None
+        if quantity_val is not None:
+            if any(abs(num - abs(quantity_val)) <= 0.01 for num in line_numbers):
+                score += 1
+
+        summary_keywords = ('osszesen', 'total', 'subtotal', 'balance', 'due', 'befizetett', 'vegosszeg')
+        if any(keyword in line_normalized for keyword in summary_keywords):
+            score -= 3
+
+        return score
+
+    def _extract_item_numbers(self, item: Dict[str, Any]) -> List[float]:
+        numbers: List[float] = []
+        for key in ('unit_price', 'net', 'gross'):
+            value = item.get(key)
+            if value in (None, ''):
+                continue
+            try:
+                numbers.append(float(str(value).replace(',', '.')))
+            except ValueError:
+                continue
+        return numbers
+
+    def _extract_name_tokens(self, name: str) -> List[str]:
+        if not name:
+            return []
+        normalized = self._normalize_text(name)
+        return [token for token in re.findall(r'[a-z0-9]+', normalized) if len(token) >= 3]
+
+    def _normalize_text(self, text: str) -> str:
+        if not text:
+            return ''
+        normalized = unicodedata.normalize('NFKD', text)
+        return ''.join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
 
     def ensure_required_structure(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure all required fields are present with correct structure"""
@@ -364,12 +514,21 @@ class InvoiceProcessor:
             cleaned = str_value.replace("Ft", "").replace("HUF", "").replace("EUR", "").replace("USD", "")
             cleaned = cleaned.replace(" ", "").replace("\u00a0", "")  # Regular and non-breaking spaces
 
+            # Remove thousand separators (dots or spaces before comma)
+            import re
+            # Remove dots used as thousand separators (e.g., 1.234,56 → 1234,56)
+            cleaned = re.sub(r'\.(?=\d{3})', '', cleaned)
+            # Remove spaces used as thousand separators (e.g., 1 234,56 → 1234,56)
+            cleaned = re.sub(r'\s(?=\d{3})', '', cleaned)
+
             # Convert comma decimal separator to period
             if "," in cleaned and "." not in cleaned:
                 cleaned = cleaned.replace(",", ".")
+            elif "," in cleaned and "." in cleaned:
+                # European format: 1.234,56 → 1234.56
+                cleaned = cleaned.replace(".", "").replace(",", ".")
 
             # Remove any remaining non-numeric characters except periods and minus
-            import re
             cleaned = re.sub(r'[^\d.-]', '', cleaned)
 
             return cleaned
@@ -377,6 +536,50 @@ class InvoiceProcessor:
         except Exception as e:
             logger.warning(f"Failed to clean numeric value '{value}': {str(e)}")
             return ""
+
+    def validate_sum_consistency(self, items: list) -> Dict[str, Any]:
+        """
+        Validate that line items sum up correctly
+
+        Args:
+            items: List of invoice line items
+
+        Returns:
+            Dict with validation results and warnings
+        """
+        try:
+            total_net = 0.0
+            total_gross = 0.0
+            warnings = []
+
+            for i, item in enumerate(items):
+                try:
+                    if item.get("net"):
+                        net_val = float(item["net"])
+                        total_net += net_val
+                    if item.get("gross"):
+                        gross_val = float(item["gross"])
+                        total_gross += gross_val
+
+                    # Validate individual item: gross should be >= net (unless discount)
+                    if item.get("net") and item.get("gross"):
+                        net_val = float(item["net"])
+                        gross_val = float(item["gross"])
+                        if gross_val < net_val and gross_val > 0 and net_val > 0:
+                            warnings.append(f"Item {i+1} '{item.get('name', '')[:30]}': gross ({gross_val}) < net ({net_val})")
+
+                except (ValueError, TypeError) as e:
+                    warnings.append(f"Item {i+1}: Invalid numeric values")
+
+            return {
+                "total_net": round(total_net, 2),
+                "total_gross": round(total_gross, 2),
+                "warnings": warnings
+            }
+
+        except Exception as e:
+            logger.warning(f"Sum consistency validation failed: {str(e)}")
+            return {"total_net": 0, "total_gross": 0, "warnings": [str(e)]}
 
     def normalize_currency(self, currency: str) -> str:
         """Normalize currency codes"""
