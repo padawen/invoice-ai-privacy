@@ -69,3 +69,38 @@ uploads/
 *.png
 *.jpg
 *.jpeg
+
+# Claude Code
+.claude/
+
+# Test files
+tests/
+
+# Archive
+archive/
+
+# User-specific files
+timing_config.json
+result.json
+baseline_result.json
+fixed_result.json
+nul
+
+# OCR cache
+.cache/
+
+# Documentation and temporary markdown files (except main README.md)
+*.md
+!README.md
+
+# Excel files
+*.xlsx
+*.xls
+
+# Analysis/temporary scripts
+create_timing_analysis.py
+*_analysis.py
+*_test.py
+
+# Fix documentation
+fixes/

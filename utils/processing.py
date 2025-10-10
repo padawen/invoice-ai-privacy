@@ -138,13 +138,17 @@ class InvoiceProcessor:
             llm_start = datetime.utcnow()
 
             # Always use chunking strategy for better speed and accuracy
-            logger.info(f"Extracting invoice data in 2 chunks ({len(extracted_text)} chars)")
+            logger.info(f"Extracting invoice data in 2 chunks")
 
-            # Chunk 1: Extract metadata (use plain OCR text)
+            # Chunk 1: Extract metadata (use structured OCR for better layout preservation - Priority 1 fix)
             if job_id:
-                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata", "processing")
+                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata with structured OCR", "processing")
 
-            metadata_prompt = self.llm_client.create_extraction_prompt(extracted_text, "metadata")
+            # Use structured OCR for metadata to preserve two-column layouts and field boundaries
+            structured_text_metadata = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, structured=True)
+            logger.info(f"Using structured OCR for metadata extraction ({len(structured_text_metadata)} chars)")
+
+            metadata_prompt = self.llm_client.create_extraction_prompt(structured_text_metadata, "metadata")
             metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
 
             # Chunk 2: Extract line items (use structured OCR for table)
@@ -225,11 +229,13 @@ class InvoiceProcessor:
     def fix_net_gross_confusion(self, items: list) -> list:
         """
         Fix items where LLM confused net and gross columns
-        If gross < net, they're likely swapped
+        If gross < net, they're likely swapped - auto-swap them
         """
         import re
 
         fixed_items = []
+        swap_count = 0
+
         for item in items:
             if not isinstance(item, dict):
                 fixed_items.append(item)
@@ -250,12 +256,72 @@ class InvoiceProcessor:
 
                 # Check if they need swapping (gross should be > net, unless it's a discount/negative)
                 if gross_val < net_val and gross_val > 0 and net_val > 0:
-                    logger.warning(f"Item '{item.get('name', '')[:30]}': gross ({gross_val}) < net ({net_val}) - LLM column confusion, values may be incorrect")
+                    # Auto-swap the values
+                    original_gross = item.get("gross")
+                    original_net = item.get("net")
+                    item["gross"] = original_net
+                    item["net"] = original_gross
+                    swap_count += 1
+                    logger.info(f"Auto-swapped gross/net for item '{item.get('name', '')[:30]}': net {gross_val}→{net_val}, gross {net_val}→{gross_val}")
 
             except Exception as e:
                 logger.debug(f"Could not validate net/gross for item: {e}")
 
             fixed_items.append(item)
+
+        if swap_count > 0:
+            logger.info(f"Fixed {swap_count} items with gross<net confusion by auto-swapping values")
+
+        return fixed_items
+
+    def validate_and_fix_quantities(self, items: List[Dict], table_text: str) -> List[Dict]:
+        """
+        Validate quantity extraction and fix obvious errors (Priority 2 fix)
+
+        If qty=1 but unit_price != net, check if unit_price * qty = net would work with a different qty
+
+        Args:
+            items: List of invoice items
+            table_text: Structured OCR text for reference
+
+        Returns:
+            Items with corrected quantities
+        """
+        fixed_items = []
+        fix_count = 0
+
+        for item in items:
+            try:
+                qty = float(item.get('quantity', '1').replace(',', '.')) if item.get('quantity') else 1.0
+                unit_price_str = item.get('unit_price', '0')
+                net_str = item.get('net', '0')
+
+                if not unit_price_str or not net_str:
+                    fixed_items.append(item)
+                    continue
+
+                unit_price = float(unit_price_str.replace(',', '.'))
+                net = float(net_str.replace(',', '.'))
+
+                # If qty=1 and unit_price * qty != net, calculate implied quantity
+                if abs(qty - 1.0) < 0.01 and abs(unit_price - net) > 1.0:
+                    # Check if net / unit_price gives a whole number
+                    if unit_price > 0:
+                        implied_qty = net / unit_price
+                        # If implied qty is close to a whole number (within 0.1)
+                        if abs(implied_qty - round(implied_qty)) < 0.1 and round(implied_qty) > 1:
+                            original_qty = item['quantity']
+                            item['quantity'] = str(int(round(implied_qty)))
+                            fix_count += 1
+                            logger.info(f"Fixed quantity for '{item.get('name', '')[:40]}': {original_qty} → {item['quantity']} (calculated from net={net}/unit_price={unit_price})")
+
+            except (ValueError, ZeroDivisionError, TypeError) as e:
+                logger.debug(f"Could not validate quantity for item: {e}")
+
+            fixed_items.append(item)
+
+        if fix_count > 0:
+            logger.info(f"Fixed {fix_count} items with incorrect quantities")
 
         return fixed_items
 
@@ -290,6 +356,10 @@ class InvoiceProcessor:
                     for item in data["invoice_data"]
                     if isinstance(item, dict)
                 ]
+
+                # Fix quantity errors (Priority 2)
+                table_text = getattr(self, '_table_text', '')
+                cleaned_items = self.validate_and_fix_quantities(cleaned_items, table_text)
 
                 # Then validate/fix with VAT-aware price mapper
                 # Use table text if available for better remapping
@@ -484,6 +554,58 @@ class InvoiceProcessor:
 
         return data
 
+    def validate_unit_price(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate unit_price makes sense given quantity and net (Priority 3 fix)
+
+        Detects cases where unit_price has an extra leading digit (OCR error)
+        Example: "773.69" should be "73.69" if qty=4 and net=294.76
+
+        Args:
+            item: Invoice item dictionary
+
+        Returns:
+            Item with corrected unit_price if needed
+        """
+        try:
+            qty_str = item.get('quantity', '')
+            unit_price_str = item.get('unit_price', '')
+            net_str = item.get('net', '')
+
+            if not qty_str or not unit_price_str or not net_str:
+                return item
+
+            qty = float(qty_str.replace(',', '.'))
+            unit_price = float(unit_price_str.replace(',', '.'))
+            net = float(net_str.replace(',', '.'))
+
+            # Expected: unit_price * quantity ≈ net
+            expected_net = unit_price * qty
+
+            # Check if there's a >10% difference
+            if abs(expected_net - net) > net * 0.1:
+                # Try removing first digit from unit_price
+                unit_price_str_clean = str(unit_price_str).replace(',', '.').strip()
+
+                # Only try if unit_price has at least 2 digits before decimal
+                if '.' in unit_price_str_clean:
+                    parts = unit_price_str_clean.split('.')
+                    if len(parts[0]) >= 2:  # At least 2 digits before decimal
+                        corrected_price_str = parts[0][1:] + '.' + parts[1]
+                        try:
+                            corrected_price = float(corrected_price_str)
+                            # Check if corrected price matches net better
+                            if abs(corrected_price * qty - net) < 1.0:
+                                item['unit_price'] = corrected_price_str
+                                logger.info(f"Fixed unit_price for '{item.get('name', '')[:40]}': {unit_price} → {corrected_price} (extra leading digit removed)")
+                        except ValueError:
+                            pass
+
+        except (ValueError, IndexError, TypeError) as e:
+            logger.debug(f"Could not validate unit_price: {e}")
+
+        return item
+
     def clean_invoice_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Clean and validate a single invoice item"""
         cleaned_item = {
@@ -498,6 +620,9 @@ class InvoiceProcessor:
         # Normalize currency
         if cleaned_item["currency"]:
             cleaned_item["currency"] = self.normalize_currency(cleaned_item["currency"])
+
+        # Validate unit price (Priority 3 fix)
+        cleaned_item = self.validate_unit_price(cleaned_item)
 
         return cleaned_item
 

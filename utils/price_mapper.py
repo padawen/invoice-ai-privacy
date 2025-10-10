@@ -243,8 +243,32 @@ class PriceMapper:
         current_score = self.score_triple(unit_price, net, gross, None, quantity)
         original_repeated = len({round(unit_price, 2), round(net, 2), round(gross, 2)}) <= 1
 
-        # If we have raw text, try to find a better mapping
-        if raw_text and (current_score > 10 or original_repeated):  # Threshold for "needs fixing"
+        # Calculate VAT error with current values
+        current_vat_error = float('inf')
+        if net > 0 and gross > 0:
+            for vat_rate in HUNGARIAN_VAT_RATES:
+                expected_gross = round(net * (1 + vat_rate), 2)
+                vat_error = abs(expected_gross - gross)
+                if vat_error < current_vat_error:
+                    current_vat_error = vat_error
+
+        # CONSERVATIVE REMAPPING POLICY:
+        # Only attempt remapping if:
+        # 1. All values are identical (clearly wrong), OR
+        # 2. Current VAT calculation is significantly wrong (>5% of gross value)
+
+        needs_remapping = False
+        if original_repeated:
+            # All values identical - definitely needs fixing
+            needs_remapping = True
+            logger.debug(f"Item '{item.get('name', '')[:30]}' has repeated values, attempting remap")
+        elif current_vat_error > max(5.0, abs(gross) * 0.05):
+            # VAT error is >5% of gross value AND >5 currency units
+            needs_remapping = True
+            logger.debug(f"Item '{item.get('name', '')[:30]}' has large VAT error ({current_vat_error:.2f}), attempting remap")
+
+        # If we have raw text and remapping is needed, try to find a better mapping
+        if raw_text and needs_remapping:
             candidates = self.extract_price_candidates(raw_text)
 
             if len(candidates['prices']) >= 3:
@@ -258,7 +282,15 @@ class PriceMapper:
                 new_net = float(best_triple['net'])
                 new_gross = float(best_triple['gross'])
                 new_score = best_triple['score']
-                improved_score = new_score < (current_score - 1e-6)
+
+                # Calculate VAT error with new values
+                new_vat_error = float('inf')
+                if new_net > 0 and new_gross > 0:
+                    for vat_rate in HUNGARIAN_VAT_RATES:
+                        expected_gross = round(new_net * (1 + vat_rate), 2)
+                        vat_error = abs(expected_gross - new_gross)
+                        if vat_error < new_vat_error:
+                            new_vat_error = vat_error
 
                 vat_used = best_triple.get('vat_used')
                 vat_consistent = False
@@ -266,12 +298,14 @@ class PriceMapper:
                     expected_gross = round(new_net * (1 + vat_used), 2)
                     vat_consistent = abs(expected_gross - new_gross) <= self.vat_tolerance
 
-                spread = max(abs(new_unit - unit_price), abs(new_net - net), abs(new_gross - gross))
-                denom = max(1.0, abs(unit_price), abs(net), abs(gross))
-                relative_change = spread / denom
-
-                original_repeated = len({round(unit_price, 2), round(net, 2), round(gross, 2)}) <= 1
+                # Check if new values would create duplicate issue
                 candidate_repeated = len({round(new_unit, 2), round(new_net, 2), round(new_gross, 2)}) <= 1
+
+                # STRICTER CONDITIONS for remapping:
+                # 1. New VAT error must be significantly better (at least 50% improvement)
+                # 2. New values must not be duplicates
+                # 3. New values must be from the OCR row
+                # 4. Either improved score OR significantly better VAT consistency
 
                 source_prices = candidates.get('prices', []) if isinstance(candidates, dict) else []
                 all_from_row = all(
@@ -279,24 +313,38 @@ class PriceMapper:
                     for value in (new_unit, new_net, new_gross)
                 )
 
-                has_meaningful_change = spread > 0.05 and (relative_change >= 0.1 or original_repeated)
-                passes_vat = vat_consistent or vat_used is None
+                vat_improvement = current_vat_error - new_vat_error
+                score_improvement = current_score - new_score
 
                 should_replace = False
-                if improved_score:
+
+                # Case 1: Original values were all identical - accept if new values are different and valid
+                if original_repeated and not candidate_repeated and all_from_row and vat_consistent:
                     should_replace = True
-                elif has_meaningful_change and passes_vat and all_from_row and not candidate_repeated:
+                    logger.debug(f"Replacing repeated values with differentiated values")
+
+                # Case 2: VAT error improved significantly (>50% reduction AND absolute improvement >2.0)
+                elif vat_improvement > max(2.0, current_vat_error * 0.5) and not candidate_repeated:
                     should_replace = True
+                    logger.debug(f"VAT error improved from {current_vat_error:.2f} to {new_vat_error:.2f}")
+
+                # Case 3: Score improved dramatically (>20 point improvement) and VAT is at least as good
+                elif score_improvement > 20 and new_vat_error <= current_vat_error and not candidate_repeated:
+                    should_replace = True
+                    logger.debug(f"Score improved from {current_score:.2f} to {new_score:.2f}")
 
                 if should_replace:
                     logger.info(f"Remapping prices for '{item.get('name', '')[:30]}': "
-                               f"old=({unit_price}, {net}, {gross}) -> "
-                               f"new=({new_unit}, {new_net}, {new_gross})")
+                               f"old=({unit_price}, {net}, {gross}) VAT_err={current_vat_error:.2f} -> "
+                               f"new=({new_unit}, {new_net}, {new_gross}) VAT_err={new_vat_error:.2f}")
 
                     item['unit_price'] = f"{new_unit:.2f}"
                     item['net'] = f"{new_net:.2f}"
                     item['gross'] = f"{new_gross:.2f}"
                     warnings.append('remapped_prices_by_vat_rule')
+                else:
+                    logger.debug(f"Skipping remap for '{item.get('name', '')[:30]}': "
+                               f"improvements insufficient (VAT: {vat_improvement:.2f}, Score: {score_improvement:.2f})")
         # Sanity checks
         if gross < net and gross > 0 and net > 0:
             warnings.append('gross_less_than_net')

@@ -15,6 +15,8 @@ class Config:
     OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'localhost:11434')
     OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'gemma2:9b')
     OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', 300))  # 5 minutes
+    # GPU layers: RTX 2060 SUPER (8GB) = 40-45, RTX 3060 (12GB) = 45+, CPU only = 0
+    OLLAMA_NUM_GPU = int(os.getenv('OLLAMA_NUM_GPU', 40))  # Optimized for RTX 2060 SUPER 8GB
 
     # Vision model settings
     USE_VISION_MODEL = os.getenv('USE_VISION_MODEL', 'false').lower() == 'true'

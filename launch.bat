@@ -9,6 +9,7 @@ REM Set environment variables
 set OLLAMA_HOST=localhost:11434
 set OLLAMA_MODEL=gemma2:9b
 set OLLAMA_TIMEOUT=300
+set OLLAMA_NUM_GPU=30
 set DEBUG=false
 set PORT=5000
 set HOST=0.0.0.0
@@ -30,7 +31,7 @@ echo Configuration:
 echo    Processing Mode: Vision=%VISION_MODE%
 echo    Text Model: Gemma2 9B
 echo    Vision Model: LLaVA 7B ^(for image processing^)
-echo    OCR: Tesseract ^(Hungarian + English^)
+echo    OCR: docTR ^(Deep Learning OCR with Hungarian support^)
 echo    API Key: [From .env file]
 echo    Ports: 5000 ^(Flask^), 11434 ^(Ollama^)
 echo:
@@ -126,17 +127,13 @@ if not errorlevel 1 (
 
 REM Start Flask application
 echo [START] Starting Flask API on port 5000...
-echo [INFO] Privacy API will be available at: http://localhost:5000
-echo [INFO] Health check: http://localhost:5000/health
-if exist ngrok.exe (
-    echo [INFO] Ngrok tunnel: check http://localhost:4040 for public URL
-)
 echo:
 echo [READY] Invoice AI Privacy is ready!
-echo [READY] Press Ctrl+C to stop the service
+echo [READY] API: http://localhost:5000
+echo [READY] Press Ctrl+C to stop
 echo:
 
-python app.py
+python app.py 2>&1 | findstr /V "DEBUG:h5py DEBUG:PIL DEBUG:urllib3 Creating converter STREAM"
 goto :eof
 
 :wait_for_ollama

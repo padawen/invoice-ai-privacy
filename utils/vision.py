@@ -11,10 +11,15 @@ from PIL import Image
 from pdf2image import convert_from_bytes
 import io
 
-# Suppress json_repair warnings
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore")
+# Suppress json_repair debug output
+import sys
+import io
+_original_stdout = sys.stdout
+sys.stdout = io.StringIO()
+try:
     from json_repair import repair_json
+finally:
+    sys.stdout = _original_stdout
 
 from config import Config
 
@@ -28,7 +33,7 @@ class VisionProcessor:
         self.base_url = f"http://{self.config.OLLAMA_HOST}"
         self.vision_model = self.config.VISION_MODEL
         self.timeout = self.config.OLLAMA_TIMEOUT
-        logger.info(f"Vision processor initialized with model: {self.vision_model}")
+        logger.debug(f"Vision processor initialized with model: {self.vision_model}")
 
     def extract_invoice_data(self, pdf_bytes: bytes, job_id: str = None) -> Dict[str, Any]:
         """
