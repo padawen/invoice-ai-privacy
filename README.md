@@ -163,8 +163,8 @@ The backend is optimized for RTX 2060 SUPER with 8GB VRAM:
 # Install dependencies
 pip install -r requirements.txt
 
-# Run tests
-python -m pytest tests/
+# Run semantic evaluation
+python thesis/semantic_accuracy_eval.py
 
 # Manual development server
 python app.py
@@ -185,14 +185,14 @@ python app.py
 
 ```bash
 # Test with ground truth validation
-python tests/semantic_accuracy_test.py
+python thesis/semantic_accuracy_eval.py
 
-# Results saved to tests/semantic_results_[timestamp].json
+# Results saved to thesis_output/semantic_results_[timestamp].json
 ```
 
 ### Ground Truth Dataset
 
-The `tests/ground_truth.json` file contains expected values for test invoices:
+The `thesis_output/ground_truth_vision.json` file contains expected values for test invoices:
 - `real_HEB04803.pdf` - Hungarian auto parts invoice
 - `generated_invoice_001.pdf` - Generated multi-item invoice
 - `real_2025_3428303_e1.pdf` - Telecom invoice

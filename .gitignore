@@ -1,16 +1,15 @@
-# Environment variables (NEVER commit these!)
+# Environment variables
 .env
 .env.local
 .env.production
 
-# Python
+# Python caches / build artefacts
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -43,64 +42,37 @@ temp/
 tmp/
 *.tmp
 
-# Models (can be large)
-models/*.bin
-models/*.model
-models/*.gguf
+# Models (keep repo small)
+models/
 
 # Test coverage
 .coverage
 .pytest_cache/
 htmlcov/
 
-# IDE
+# IDE/editor
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Uploaded files
+# Generated uploads / assets
 uploads/
 *.pdf
 *.png
 *.jpg
 *.jpeg
 
-# Claude Code
+# Claude Code artefacts
 .claude/
 
-# Test files
-tests/
+# Thesis outputs (generated artefacts)
+thesis_output/
 
-# Archive
-archive/
-
-# User-specific files
-timing_config.json
-result.json
-baseline_result.json
-fixed_result.json
-nul
-
-# OCR cache
-.cache/
-
-# Documentation and temporary markdown files (except main README.md)
-*.md
-!README.md
-
-# Excel files
+# Excel exports
 *.xlsx
 *.xls
-
-# Analysis/temporary scripts
-create_timing_analysis.py
-*_analysis.py
-*_test.py
-
-# Fix documentation
-fixes/
