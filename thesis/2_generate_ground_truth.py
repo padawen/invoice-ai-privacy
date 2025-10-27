@@ -1,18 +1,16 @@
 """
-Utility script to keep the local invoice dataset in sync.
+Generate ground truth using OpenAI Vision API.
 
-Steps performed:
-1. Categorise every PDF in the invoice_templates directory that is not yet
-   listed in thesis_output/invoice_categories.json. A simple heuristic assigns
-   invoices with an embedded text layer to the digital_text category and
-   everything else to the digital_image bucket.
-2. Generate ground-truth entries in thesis_output/ground_truth_vision.json for
-   invoices that do not yet have them by calling the same OpenAI Vision
-   pipeline (prompt + formatting rules) used by the Next.js app.
-3. Execute the semantic accuracy evaluation so results stay current.
+This script:
+- Checks which invoices don't have ground truth yet
+- Converts PDF pages to images using Playwright + pdf.js
+- Sends images to OpenAI Vision with the same prompt as the Next.js app
+- Saves results incrementally to ground_truth_vision.json
 
-Run from the repository root:
-    python thesis/dataset_sync.py
+Only processes invoices that are missing from ground truth (idempotent).
+
+Usage:
+    python thesis/2_generate_ground_truth.py
 """
 
 import base64
@@ -28,36 +26,32 @@ from typing import Dict, List, Optional
 
 try:
     from openai import OpenAI
-except ImportError as exc:  # pragma: no cover
+except ImportError as exc:
     raise SystemExit("Missing dependency: openai. Install with 'pip install openai'.") from exc
 
 try:
     from playwright.sync_api import sync_playwright
-except ImportError as exc:  # pragma: no cover
+except ImportError as exc:
     raise SystemExit(
         "Missing dependency: playwright. Install with 'pip install playwright' and run 'playwright install chromium'."
     ) from exc
 
-# Ensure repository modules resolve for downstream imports
+# Setup paths
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-if str(Path(__file__).parent.resolve()) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).parent.resolve()))
-
-from config import Config  # noqa: E402
-from utils.processing import InvoiceProcessor  # noqa: E402
-from semantic_accuracy_eval import SemanticAccuracyTester  # noqa: E402
 
 OUTPUT_DIR = ROOT_DIR / "thesis_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-INVOICE_DIR = Path("C:/Users/Davide/Downloads/invoice_templates")
-CATEGORIES_PATH = OUTPUT_DIR / "invoice_categories.json"
-GROUND_TRUTH_PATH = ROOT_DIR / "thesis_output" / "ground_truth_vision.json"
+INVOICE_DIR = Path(__file__).parent / "invoice_templates"
+GROUND_TRUTH_PATH = OUTPUT_DIR / "ground_truth_vision.json"
 INVOICE_AI_ENV_FILE = ROOT_DIR.parent / "invoice-ai" / ".env.local"
 INSTRUCTIONS_FILE = ROOT_DIR.parent / "invoice-ai" / "lib" / "instructions.ts"
 OPENAI_MODEL = os.getenv("OPENAI_VISION_MODEL") or "gpt-4o"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def load_env_local() -> Dict[str, str]:
@@ -99,6 +93,7 @@ def load_guidelines_text() -> str:
     return content[start:end].strip()
 
 
+# Load OpenAI API key
 _env_local = load_env_local()
 OPENAI_API_KEY = (
     os.getenv("OPENAI_API_KEY")
@@ -108,78 +103,19 @@ OPENAI_API_KEY = (
 )
 
 if not OPENAI_API_KEY:
-    logging.error("OPENAI_API_KEY is not configured. Set env or add to invoice-ai/.env.local")
+    logger.error("OPENAI_API_KEY is not configured. Set env or add to invoice-ai/.env.local")
     sys.exit(1)
 
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY)
 GUIDELINES_TEXT = load_guidelines_text()
 
-DEFAULT_DESCRIPTIONS = {
-    "category_3_good_scan": "Good scan quality - clear scanned document, good OCR",
-    "category_4_digital_image": "Digital invoice (non-searchable) - clean but image-based PDF",
-    "category_5_digital_text": "Digital e-invoice (searchable) - born-digital, text-based PDF",
-}
-
 
 def load_json(path: Path, default) -> dict:
+    """Load JSON file or return default if not exists."""
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return json.loads(json.dumps(default))  # deep copy
-
-
-def ensure_category_structure(data: dict) -> dict:
-    """Ensure category dict contains the expected keys and descriptions."""
-    for key, description in DEFAULT_DESCRIPTIONS.items():
-        entry = data.setdefault(key, {})
-        entry.setdefault("description", description)
-        entry.setdefault("invoices", [])
-    return data
-
-
-def detect_category(pdf_path: Path, processor: InvoiceProcessor) -> str:
-    """
-    Heuristic categorisation:
-      - If the PDF has a sizeable embedded text layer, treat as digital_text.
-      - Otherwise default to digital_image (non-searchable).  This keeps the
-        process automatic; manual promotion to good_scan can be done later.
-    """
-    try:
-        native = processor._extract_pdf_native_text(pdf_path.read_bytes())  # type: ignore[attr-defined]
-        if native and native.get("char_count", 0) > 200:
-            return "category_5_digital_text"
-    except Exception as exc:  # pragma: no cover
-        logging.warning("Failed to inspect %s for embedded text: %s", pdf_path.name, exc)
-
-    return "category_4_digital_image"
-
-
-def update_categories(invoice_files: List[str]) -> None:
-    categories = ensure_category_structure(load_json(CATEGORIES_PATH, {}))
-
-    assigned = {name for cat in categories.values() for name in cat.get("invoices", [])}
-    missing = sorted(set(invoice_files) - assigned)
-
-    if not missing:
-        logging.info("All invoices already categorised.")
-        return
-
-    logging.info("Categorising %d new invoice(s).", len(missing))
-    processor = InvoiceProcessor(Config())
-
-    for filename in missing:
-        category = detect_category(INVOICE_DIR / filename, processor)
-        invoices = categories[category]["invoices"]
-        if filename not in invoices:
-            invoices.append(filename)
-            logging.info("  %s -> %s", filename, category)
-
-    for entry in categories.values():
-        entry["invoices"] = sorted(set(entry.get("invoices", [])))
-
-    with open(CATEGORIES_PATH, "w", encoding="utf-8") as f:
-        json.dump(categories, f, indent=2, ensure_ascii=False)
-    logging.info("Updated categories written to %s", CATEGORIES_PATH)
 
 
 def clean_ground_truth_entry(entry: dict) -> dict:
@@ -288,7 +224,7 @@ def call_openai_vision(pdf_path: Path) -> Optional[dict]:
     try:
         images_b64 = pdf_to_base64_images(pdf_path)
     except Exception as exc:
-        logging.error("  %s -> failed to convert PDF to images: %s", pdf_path.name, exc)
+        logger.error("  %s -> failed to convert PDF to images: %s", pdf_path.name, exc)
         return None
 
     content = [{"type": "text", "text": GUIDELINES_TEXT}]
@@ -309,7 +245,7 @@ def call_openai_vision(pdf_path: Path) -> Optional[dict]:
             temperature=0,
         )
     except Exception as exc:
-        logging.error("  %s -> OpenAI API error: %s", pdf_path.name, exc)
+        logger.error("  %s -> OpenAI API error: %s", pdf_path.name, exc)
         return None
 
     text = response.choices[0].message.content.strip()
@@ -323,7 +259,7 @@ def call_openai_vision(pdf_path: Path) -> Optional[dict]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        logging.error("  %s -> failed to parse JSON response: %s", pdf_path.name, exc)
+        logger.error("  %s -> failed to parse JSON response: %s", pdf_path.name, exc)
         return None
 
     return data
@@ -333,31 +269,33 @@ def generate_ground_truth(pdf_path: Path) -> Optional[dict]:
     """Generate ground truth strictly via OpenAI Vision API."""
     result = call_openai_vision(pdf_path)
     if result and result.get("invoice_data"):
-        logging.info(
+        logger.info(
             "  %s -> extracted %d items via OpenAI Vision",
             pdf_path.name,
             len(result["invoice_data"]),
         )
         return clean_ground_truth_entry(result)
 
-    logging.error("  %s -> OpenAI Vision returned no data", pdf_path.name)
+    logger.error("  %s -> OpenAI Vision returned no data", pdf_path.name)
     return None
 
 
 def update_ground_truth(invoice_files: List[str]) -> None:
+    """Generate ground truth for invoices that don't have it yet."""
     ground_truth = load_json(GROUND_TRUTH_PATH, {})
     missing = sorted(set(invoice_files) - set(ground_truth.keys()))
+
     if not missing:
-        logging.info("Ground truth already up to date.")
+        logger.info("Ground truth already up to date.")
         return
 
-    logging.info("Generating ground truth for %d invoice(s).", len(missing))
+    logger.info("Generating ground truth for %d invoice(s).", len(missing))
 
     updated = False
     for filename in missing:
         pdf_path = INVOICE_DIR / filename
         if not pdf_path.exists():
-            logging.warning("  Skipping missing file: %s", pdf_path)
+            logger.warning("  Skipping missing file: %s", pdf_path)
             continue
 
         entry = generate_ground_truth(pdf_path)
@@ -365,7 +303,7 @@ def update_ground_truth(invoice_files: List[str]) -> None:
             ground_truth[filename] = entry
             updated = True
         else:
-            logging.error("  Failed to extract ground truth for %s", filename)
+            logger.error("  Failed to extract ground truth for %s", filename)
 
         # Save incrementally to avoid losing progress on failure
         if updated:
@@ -373,42 +311,29 @@ def update_ground_truth(invoice_files: List[str]) -> None:
                 json.dump(ground_truth, f, indent=2, ensure_ascii=False)
 
     if updated:
-        logging.info("Ground truth saved to %s", GROUND_TRUTH_PATH)
+        logger.info("Ground truth saved to %s", GROUND_TRUTH_PATH)
     else:
-        logging.info("No ground truth changes written.")
+        logger.info("No ground truth changes written.")
 
 
-def run_semantic_tests() -> None:
-    if not GROUND_TRUTH_PATH.exists():
-        logging.warning("Ground truth file not found; skipping semantic accuracy tests.")
-        return
-
-    logging.info("Running semantic accuracy tests...")
-    tester = SemanticAccuracyTester(str(INVOICE_DIR), str(GROUND_TRUTH_PATH))
-    tester.run_semantic_tests()
-
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-    run_comparison = "--compare" in sys.argv
+def main():
+    """Main entry point."""
+    logger.info("="*80)
+    logger.info("STEP 2: GENERATE GROUND TRUTH (OpenAI Vision)")
+    logger.info("="*80)
 
     if not INVOICE_DIR.exists():
-        logging.error("Invoice directory not found: %s", INVOICE_DIR)
+        logger.error("Invoice directory not found: %s", INVOICE_DIR)
         sys.exit(1)
 
     invoice_files = sorted(p.name for p in INVOICE_DIR.glob("*.pdf"))
     if not invoice_files:
-        logging.warning("No PDF invoices found in %s", INVOICE_DIR)
+        logger.warning("No PDF invoices found in %s", INVOICE_DIR)
         return
 
-    logging.info("Processing %d invoice(s).", len(invoice_files))
-    update_categories(invoice_files)
+    logger.info("Found %d invoice(s).", len(invoice_files))
     update_ground_truth(invoice_files)
-    if run_comparison:
-        run_semantic_tests()
-    else:
-        logging.info("Skipping semantic accuracy tests (no '--compare' flag). Run once with '--compare' when ready.")
+    logger.info("Ground truth generation complete.")
 
 
 if __name__ == "__main__":

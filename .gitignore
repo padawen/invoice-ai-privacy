@@ -42,9 +42,6 @@ temp/
 tmp/
 *.tmp
 
-# Models (keep repo small)
-models/
-
 # Test coverage
 .coverage
 .pytest_cache/
@@ -76,3 +73,7 @@ thesis_output/
 # Excel exports
 *.xlsx
 *.xls
+
+# Invoice templates (sensitive data - PDFs and all contents except .gitkeep)
+thesis/invoice_templates/*
+!thesis/invoice_templates/.gitkeep

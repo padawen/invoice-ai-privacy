@@ -7,7 +7,7 @@ echo:
 
 REM Set environment variables
 set OLLAMA_HOST=localhost:11434
-set OLLAMA_MODEL=gemma2:9b
+set OLLAMA_MODEL=llama3.1:8b-instruct-q6_K
 set OLLAMA_TIMEOUT=300
 set OLLAMA_NUM_GPU=30
 set DEBUG=false
@@ -17,21 +17,9 @@ set OCR_LANGUAGE=hun+eng
 set MAX_FILE_SIZE=52428800
 set LOG_LEVEL=INFO
 
-REM Check vision mode from .env
-findstr "USE_VISION_MODEL=true" .env >nul 2>&1
-if not errorlevel 1 (
-    set VISION_MODE=enabled
-    set MODEL_NAME=LLaVA 7B Vision
-) else (
-    set VISION_MODE=disabled
-    set MODEL_NAME=Gemma2 9B
-)
-
 echo Configuration:
-echo    Processing Mode: Vision=%VISION_MODE%
-echo    Text Model: Gemma2 9B
-echo    Vision Model: LLaVA 7B ^(for image processing^)
-echo    OCR: docTR ^(Deep Learning OCR with Hungarian support^)
+echo    Model: Llama 3.1 8B Q6_K
+echo    OCR: Tesseract ^(Hungarian and English support^)
 echo    API Key: [From .env file]
 echo    Ports: 5000 ^(Flask^), 11434 ^(Ollama^)
 echo:
@@ -87,26 +75,15 @@ if errorlevel 1 (
 )
 echo [OK] Ollama is responding
 
-REM Check if models exist
-if "%VISION_MODE%"=="enabled" (
-    echo [MODEL] Verifying LLaVA 7B vision model...
-    "%OLLAMA_EXE%" list | findstr "llava:7b" >nul
-    if errorlevel 1 (
-        echo [ERROR] LLaVA model not found. Run: ollama pull llava:7b
-        pause
-        exit /b 1
-    )
-    echo [OK] Vision model ready
-) else (
-    echo [MODEL] Verifying Gemma2 9B model...
-    "%OLLAMA_EXE%" list | findstr "gemma2:9b" >nul
-    if errorlevel 1 (
-        echo [ERROR] Model not found. Please run install.bat first.
-        pause
-        exit /b 1
-    )
-    echo [OK] Text model ready
+REM Check if model exists
+echo [MODEL] Verifying Llama 3.1 8B model...
+"%OLLAMA_EXE%" list | findstr "llama3.1:8b-instruct-q6_K" >nul
+if errorlevel 1 (
+    echo [ERROR] Model not found. Please run install.bat first.
+    pause
+    exit /b 1
 )
+echo [OK] Model ready
 
 REM Check and start ngrok if needed (optional)
 echo [NGROK] Checking if ngrok is available...

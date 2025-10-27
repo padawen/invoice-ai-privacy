@@ -277,9 +277,9 @@ def estimate_time():
         pdf_bytes = file.read()
 
         # Quick OCR to get character count (using OCR processor)
-        from utils.ocr import OCRProcessor
-        ocr = OCRProcessor(Config)
-        text = ocr.extract_text_from_pdf(pdf_bytes, structured=False)
+        from utils.ocr_tesseract import TesseractOCRProcessor
+        ocr = TesseractOCRProcessor(Config)
+        text = ocr.extract_text_from_pdf(pdf_bytes, preserve_columns=False)
         char_count = len(text)
 
         # Timing formula based on 40 GPU layer performance:

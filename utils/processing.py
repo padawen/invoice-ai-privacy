@@ -22,69 +22,6 @@ class InvoiceProcessor:
         text = self._normalize_dates(text)
         return text
 
-    def _trim_metadata_text(self, text: str) -> str:
-        """
-        Extract metadata-relevant portion of OCR text.
-
-        Strategy: Keep text BEFORE table headers + some lines after (in case seller/buyer info is at the bottom)
-        For invoices where seller/buyer appears after the table, we need to capture both beginning and end.
-        """
-        if not text:
-            return text
-
-        lines = [line for line in text.splitlines()]
-        header_keywords = (
-            "megnevez",
-            "cikkleir",
-            "mennyiseg",
-            "quantity",
-            "description",
-            "items",
-            "termek",
-            "listaar",
-            "netto",
-            "brutto",
-        )
-
-        # Find table header position
-        table_start_idx = None
-        for idx, line in enumerate(lines):
-            normalized = self._normalize_text(line)
-            if any(keyword in normalized for keyword in header_keywords):
-                table_start_idx = idx
-                break
-
-        if table_start_idx is not None:
-            # Strategy: Take text BEFORE table + check if seller/buyer keywords exist AFTER table
-            before_table = lines[:table_start_idx]
-            after_table = lines[table_start_idx:]
-
-            # Check if seller/buyer keywords exist after the table (some invoices have this layout)
-            seller_buyer_keywords = ("kft", "zrt", "bt", "vevo", "szallito", "elado", "szolgaltato", "adoszam")
-            has_metadata_after = False
-            for line in after_table[:50]:  # Check up to 50 lines after table
-                normalized = self._normalize_text(line)
-                if any(keyword in normalized for keyword in seller_buyer_keywords):
-                    has_metadata_after = True
-                    break
-
-            if has_metadata_after:
-                # Include text both before AND after table (up to reasonable limit)
-                combined = before_table + after_table[:50]
-                trimmed = [ln for ln in combined if ln.strip()]
-                if trimmed:
-                    return "\n".join(trimmed)
-            else:
-                # Just use text before table
-                trimmed = [ln for ln in before_table if ln.strip()]
-                if trimmed:
-                    return "\n".join(trimmed)
-
-        # No table headers found, return full text (up to reasonable limit for metadata)
-        max_lines = 100  # Reasonable limit for metadata section
-        trimmed = [ln for ln in lines[:max_lines] if ln.strip()]
-        return "\n".join(trimmed)
-
     def _normalize_numeric_tokens(self, text: str) -> str:
         def repl(match: re.Match) -> str:
             token = match.group(0)
@@ -300,70 +237,86 @@ class InvoiceProcessor:
 
             llm_start = datetime.utcnow()
 
-            # Always use chunking strategy for better speed and accuracy
-            logger.info(f"Extracting invoice data in 2 chunks")
+            # Simplified chunking strategy - trust LLM with good prompts
+            logger.info(f"Extracting invoice data in 2 chunks (simplified pipeline)")
 
-            self._buyer_fallback = None
-            # Chunk 1: Extract metadata (use structured OCR for better layout preservation - Priority 1 fix)
+            # Chunk 1: Extract metadata
             if job_id:
-                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata with structured OCR", "processing")
+                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata", "processing")
 
-            # Use structured OCR for metadata to preserve two-column layouts and field boundaries
+            # Get structured OCR text for metadata (preserve columns for layout)
             if not use_native_text or structured_text_metadata is None:
                 structured_text_metadata = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, preserve_columns=True)
                 structured_text_metadata = self._prepare_text_for_llm(structured_text_metadata)
-                structured_text_metadata = self._trim_metadata_text(structured_text_metadata)
                 logger.info(f"Using structured OCR for metadata extraction ({len(structured_text_metadata)} chars)")
             else:
-                # Already have native text - just trim it
-                structured_text_metadata = self._trim_metadata_text(structured_text_metadata)
                 logger.info(f"Using native PDF text for metadata extraction ({len(structured_text_metadata)} chars)")
 
-            self._metadata_source_text = structured_text_metadata
             metadata_prompt = self.llm_client.create_extraction_prompt(structured_text_metadata, "metadata")
             metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
-            metadata = self._seed_buyer_from_text(metadata, structured_text_metadata)
-            buyer_snapshot = metadata.get("buyer")
-            if isinstance(buyer_snapshot, dict):
-                self._buyer_fallback = buyer_snapshot.copy()
 
-            # Chunk 2: Extract line items (use structured OCR for table)
+            # Chunk 2: Extract line items
             if job_id:
-                progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items with structured OCR", "processing")
+                progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items", "processing")
                 if progress_tracker.is_cancelled(job_id):
                     logger.info(f"Job {job_id} was cancelled during chunked processing")
                     return self.get_cancellation_result(filename, job_id)
 
-            # Re-OCR with table structure for items extraction
-            structured_text, used_doctr = self._extract_item_table_text(
-                pdf_bytes,
-                job_id,
-                structured_text_for_items,
-                use_native_text,
-            )
-            if used_doctr:
-                logger.info(f"Using docTR table extractor for items ({len(structured_text)} chars)")
-            elif use_native_text and structured_text_for_items is not None:
-                logger.info(f"Using native PDF text for item extraction ({len(structured_text)} chars)")
+            # Use structured OCR for items - hybrid approach: try preserve_columns=True first
+            # If that yields 0 items, retry with preserve_columns=False
+            if not use_native_text or structured_text_for_items is None:
+                # First attempt: preserve_columns=True (generally better for most invoices)
+                structured_text_for_items = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, preserve_columns=True)
+                structured_text_for_items = self._prepare_text_for_llm(structured_text_for_items)
+                logger.info(f"Using structured OCR for items extraction with preserve_columns=True ({len(structured_text_for_items)} chars)")
             else:
-                logger.info(f"Re-extracted structured text for items ({len(structured_text)} chars)")
+                logger.info(f"Using native PDF text for item extraction ({len(structured_text_for_items)} chars)")
 
-            items_prompt = self.llm_client.create_extraction_prompt(structured_text, "items")
-            # Changed to expect_array=False since items now returns {"invoice_data": [...]}
+            items_prompt = self.llm_client.create_extraction_prompt(structured_text_for_items, "items")
             items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=False)
 
-            # Store the table text for validation
-            self._table_text = structured_text
-
-            # Combine results
+            # Extract items from response
+            extracted_items = []
             if isinstance(items_data, list):
-                metadata["invoice_data"] = self.fix_net_gross_confusion(items_data)
+                extracted_items = items_data
             elif isinstance(items_data, dict) and "invoice_data" in items_data:
-                metadata["invoice_data"] = self.fix_net_gross_confusion(items_data["invoice_data"])
-            else:
-                metadata["invoice_data"] = []
+                extracted_items = items_data["invoice_data"]
+
+            logger.info(f"[HYBRID DEBUG] First attempt (preserve_columns=True) extracted {len(extracted_items)} items")
+
+            # Hybrid fallback: if 0 items extracted with preserve_columns=True, retry with False
+            # But ONLY for OCR-based PDFs - never fallback for native text PDFs
+            should_retry = len(extracted_items) == 0 and not use_native_text
+            logger.info(f"[HYBRID DEBUG] Should retry: {should_retry} (items={len(extracted_items)}, use_native_text={use_native_text})")
+
+            if should_retry:
+                logger.warning("No items extracted with preserve_columns=True, retrying with preserve_columns=False")
+                structured_text_for_items_retry = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, preserve_columns=False)
+                structured_text_for_items_retry = self._prepare_text_for_llm(structured_text_for_items_retry)
+                logger.info(f"Retrying items extraction with preserve_columns=False ({len(structured_text_for_items_retry)} chars)")
+
+                items_prompt_retry = self.llm_client.create_extraction_prompt(structured_text_for_items_retry, "items")
+                items_data_retry = self.llm_client.generate_completion(items_prompt_retry, job_id, expect_array=False)
+
+                if isinstance(items_data_retry, list):
+                    extracted_items = items_data_retry
+                elif isinstance(items_data_retry, dict) and "invoice_data" in items_data_retry:
+                    extracted_items = items_data_retry["invoice_data"]
+
+                logger.info(f"[HYBRID DEBUG] Retry with preserve_columns=False yielded {len(extracted_items)} items")
+                if len(extracted_items) > 0:
+                    logger.info(f"[HYBRID DEBUG] ✓ Retry SUCCESS - fallback to preserve_columns=False fixed the issue")
+                else:
+                    logger.warning(f"[HYBRID DEBUG] ✗ Retry FAILED - still 0 items with preserve_columns=False")
+
+            # Apply post-processing and combine results
+            metadata["invoice_data"] = self.fix_net_gross_confusion(extracted_items) if extracted_items else []
 
             structured_data = metadata
+
+            # Normalize date formats (2024.12.04 → 2024-12-04)
+            structured_data = self._normalize_dates(structured_data)
+
             llm_duration = (datetime.utcnow() - llm_start).total_seconds()
 
             logger.info(f"LLM processing completed in {llm_duration:.2f}s")
@@ -377,20 +330,6 @@ class InvoiceProcessor:
                 progress_tracker.update_progress(job_id, "postprocess", 95, "Post-processing results", "processing")
 
             final_data = self.post_process_result(structured_data)
-            metadata_source = getattr(self, "_metadata_source_text", None) or extracted_text
-            final_data = self._seed_buyer_from_text(final_data, metadata_source)
-
-            buyer_dict = final_data.setdefault("buyer", {})
-            if isinstance(self._buyer_fallback, dict):
-                self._merge_buyer_info(buyer_dict, self._buyer_fallback)
-
-            raw_buyer = self._extract_buyer_from_text(metadata_source)
-            if raw_buyer:
-                self._merge_buyer_info(buyer_dict, raw_buyer)
-
-            self._sanitize_buyer_fields(buyer_dict)
-            self._metadata_source_text = None
-            self._buyer_fallback = None
 
             # Add processing metadata
             total_duration = (datetime.utcnow() - processing_start).total_seconds()
@@ -474,56 +413,41 @@ class InvoiceProcessor:
 
         return fixed_items
 
-    def validate_and_fix_quantities(self, items: List[Dict], table_text: str) -> List[Dict]:
+    def _normalize_dates(self, structured_data: dict) -> dict:
         """
-        Validate quantity extraction and fix obvious errors (Priority 2 fix)
+        Normalize date formats in structured data.
+        Converts dates from formats like "2024.12.04", "2025.01.09." to "2024-12-04"
 
-        If qty=1 but unit_price != net, check if unit_price * qty = net would work with a different qty
-
-        Args:
-            items: List of invoice items
-            table_text: Structured OCR text for reference
-
-        Returns:
-            Items with corrected quantities
+        Applies to: issue_date, fulfillment_date, due_date
         """
-        fixed_items = []
-        fix_count = 0
+        import re
 
-        for item in items:
-            try:
-                qty = float(item.get('quantity', '1').replace(',', '.')) if item.get('quantity') else 1.0
-                unit_price_str = item.get('unit_price', '0')
-                net_str = item.get('net', '0')
+        date_fields = ["issue_date", "fulfillment_date", "due_date"]
 
-                if not unit_price_str or not net_str:
-                    fixed_items.append(item)
-                    continue
+        for field in date_fields:
+            if field not in structured_data or not structured_data[field]:
+                continue
 
-                unit_price = float(unit_price_str.replace(',', '.'))
-                net = float(net_str.replace(',', '.'))
+            date_str = str(structured_data[field]).strip()
 
-                # If qty=1 and unit_price * qty != net, calculate implied quantity
-                if abs(qty - 1.0) < 0.01 and abs(unit_price - net) > 1.0:
-                    # Check if net / unit_price gives a whole number
-                    if unit_price > 0:
-                        implied_qty = net / unit_price
-                        # If implied qty is close to a whole number (within 0.1)
-                        if abs(implied_qty - round(implied_qty)) < 0.1 and round(implied_qty) > 1:
-                            original_qty = item['quantity']
-                            item['quantity'] = str(int(round(implied_qty)))
-                            fix_count += 1
-                            logger.info(f"Fixed quantity for '{item.get('name', '')[:40]}': {original_qty} → {item['quantity']} (calculated from net={net}/unit_price={unit_price})")
+            # Pattern: YYYY.MM.DD or YYYY.MM.DD. (with optional trailing dot)
+            match = re.match(r'(\d{4})\.(\d{1,2})\.(\d{1,2})\.?', date_str)
+            if match:
+                year, month, day = match.groups()
+                normalized = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                structured_data[field] = normalized
+                logger.debug(f"Normalized {field}: {date_str} → {normalized}")
+                continue
 
-            except (ValueError, ZeroDivisionError, TypeError) as e:
-                logger.debug(f"Could not validate quantity for item: {e}")
+            # Pattern: DD.MM.YYYY or DD.MM.YYYY. (European format)
+            match = re.match(r'(\d{1,2})\.(\d{1,2})\.(\d{4})\.?', date_str)
+            if match:
+                day, month, year = match.groups()
+                normalized = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                structured_data[field] = normalized
+                logger.debug(f"Normalized {field}: {date_str} → {normalized}")
 
-            fixed_items.append(item)
-
-        if fix_count > 0:
-            logger.info(f"Fixed {fix_count} items with incorrect quantities")
-
-        return fixed_items
+        return structured_data
 
     def remove_duplicate_items(self, items: List[Dict]) -> List[Dict]:
         """
@@ -572,53 +496,6 @@ class InvoiceProcessor:
 
         return unique_items
 
-    def remove_header_section(self, ocr_text: str) -> str:
-        """
-        Remove header section from OCR text to prevent LLM from extracting wrong data.
-        The header typically contains company branding and wrong email addresses.
-
-        Strategy: Find where the actual invoice content starts by looking for markers like:
-        - "Vevő:" or "Vev6:" (Buyer section)
-        - Date fields like "Teljesítés dátuma" (Fulfillment date)
-        - Table headers like "Cikkleiras" (Item description)
-
-        Args:
-            ocr_text: Raw OCR text
-
-        Returns:
-            OCR text with header removed (starting from buyer section)
-        """
-        if not ocr_text:
-            return ocr_text
-
-        lines = ocr_text.split('\n')
-
-        # Find the line where actual invoice content starts
-        # Look for buyer section markers (most reliable)
-        buyer_markers = ['Vevő:', 'Vev6:', 'VEVŐ:', 'Buyer:', 'Customer:']
-
-        for i, line in enumerate(lines):
-            # Check for buyer section
-            for marker in buyer_markers:
-                if marker in line:
-                    logger.info(f"Removing header: Found buyer marker '{marker}' at line {i}")
-                    # Return from this line onwards
-                    return '\n'.join(lines[i:])
-
-        # Fallback: Look for date field markers (Teljesítés, Fizetési, etc.)
-        date_markers = ['Teljesités', 'Teljesítés', 'Fizetési', 'Bizonylat kelte']
-        for i, line in enumerate(lines):
-            for marker in date_markers:
-                if marker in line and i > 5:  # Must be after first few lines
-                    logger.info(f"Removing header: Found date marker '{marker}' at line {i}")
-                    # Go back a few lines to include buyer section
-                    start_line = max(0, i - 3)
-                    return '\n'.join(lines[start_line:])
-
-        # If no markers found, return original (better safe than sorry)
-        logger.warning("Could not find header markers, keeping full OCR text")
-        return ocr_text
-
     def post_process_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Post-process the result to match OpenAI format exactly
@@ -661,10 +538,6 @@ class InvoiceProcessor:
                     for item in data["invoice_data"]
                     if isinstance(item, dict)
                 ]
-
-                # Fix quantity errors (Priority 2)
-                table_text = getattr(self, '_table_text', '')
-                cleaned_items = self.validate_and_fix_quantities(cleaned_items, table_text)
 
                 # Remove duplicate items (same name + quantity + net)
                 cleaned_items = self.remove_duplicate_items(cleaned_items)
@@ -712,89 +585,6 @@ class InvoiceProcessor:
             return self.get_error_fallback(f"Post-processing error: {str(e)}")
 
 
-    def _prepare_table_lines(self, table_text: str) -> List[str]:
-        if not table_text:
-            return []
-        normalized_text = self._normalize_table_text(table_text)
-        return [line.strip() for line in normalized_text.splitlines() if line.strip()]
-
-    def _normalize_table_text(self, text: str) -> str:
-        if not text:
-            return text
-        merged_lines = self._merge_orphan_numeric_lines(text.splitlines())
-        rows = self._parse_table_rows(merged_lines)
-        if rows:
-            return "\n".join(" | ".join(row) for row in rows)
-        cleaned = [line.strip() for line in merged_lines if line.strip()]
-        return "\n".join(cleaned)
-
-    def _extract_item_table_text(
-        self,
-        pdf_bytes: bytes,
-        job_id: Optional[str],
-        native_structured_text: Optional[str],
-        use_native_text: bool,
-    ) -> Tuple[str, bool]:
-        raw_text: Optional[str] = None
-        used_doctr = False
-
-        if self.table_extractor and (not use_native_text or native_structured_text is None):
-            try:
-                doctr_text = self.table_extractor.extract_table_text(pdf_bytes, job_id)
-                if doctr_text and doctr_text.strip():
-                    raw_text = doctr_text
-                    used_doctr = True
-            except Exception as exc:
-                logger.warning("docTR table extractor failed, falling back to OCR processor: %s", exc)
-
-        if raw_text is None:
-            if not use_native_text or native_structured_text is None:
-                raw_text = self.ocr_processor.extract_text_from_pdf(
-                    pdf_bytes,
-                    job_id,
-                    preserve_columns=True,
-                )
-            else:
-                raw_text = native_structured_text
-
-        prepared = self._prepare_text_for_llm(raw_text or "")
-        normalized = self._normalize_table_text(prepared)
-        return normalized, used_doctr
-
-    def _merge_orphan_numeric_lines(self, lines: List[str]) -> List[str]:
-        if not lines:
-            return []
-
-        merged: List[str] = []
-        for line in lines:
-            stripped = line.rstrip()
-            if not stripped:
-                merged.append(stripped)
-                continue
-
-            if merged and self._is_numeric_tail(stripped):
-                merged[-1] = (merged[-1] + " " + stripped).strip()
-            else:
-                merged.append(stripped)
-        return merged
-
-    def _is_numeric_tail(self, line: str) -> bool:
-        if not line:
-            return False
-
-        stripped = line.strip()
-        if not stripped:
-            return False
-
-        if not any(ch.isdigit() for ch in stripped):
-            return False
-
-        letters = ''.join(ch for ch in stripped if ch.isalpha())
-        letters_lower = letters.lower()
-        for token in ("ft", "huf", "eur", "usd", "gbp"):
-            letters_lower = letters_lower.replace(token, "")
-
-        return letters_lower == ""
 
     def _parse_table_rows(self, lines: List[str]) -> List[List[str]]:
         header_keywords = (
@@ -929,354 +719,6 @@ class InvoiceProcessor:
             if key == "tax_id" and existing != value:
                 target[key] = value
 
-    def _sanitize_buyer_fields(self, buyer: Dict[str, str]) -> None:
-        if not isinstance(buyer, dict):
-            return
-
-        contact_tokens = (
-            "@",
-            "email",
-            "telefon",
-            "tel",
-            "order",
-            "rendeles",
-            "rendelés",
-            "azonosito",
-            "azonosító",
-            "szamla szam",
-            "számla szám",
-        )
-
-        name = buyer.get("name")
-        if name and any(token in name.lower() for token in contact_tokens):
-            buyer["name"] = ""
-
-        address = buyer.get("address")
-        if address and any(token in address.lower() for token in contact_tokens):
-            buyer["address"] = ""
-
-    def _extract_buyer_from_text(self, text: str) -> Optional[Dict[str, str]]:
-        if not text:
-            return None
-
-        lines = [line.strip() for line in text.splitlines()]
-        normalized = [self._normalize_text(line) for line in lines]
-
-        def marker_present(norm_line: str) -> bool:
-            letters_only = re.sub(r'[^a-z]', '', norm_line)
-            for marker in primary_markers + secondary_markers:
-                compact = marker.replace(" ", "")
-                if marker in norm_line or compact in letters_only:
-                    return True
-            return False
-
-        primary_markers = [
-            "vevo",
-            "vev",
-            "megrendelo",
-            "ugyfel",
-            "szamla cimzettje",
-            "szamlacimzettje",
-            "szamlafizeto",
-            "fizeto",
-            "szamla befogadoja",
-            "elofizeto",
-            "vasarlo",
-        ]
-        secondary_markers = [
-            "szallitas cim",
-            "szallitasi cim",
-            "szallitasicim",
-        ]
-
-        segment = self._locate_anchor_section(lines, normalized, primary_markers)
-        if segment is None:
-            segment = self._locate_anchor_section(lines, normalized, secondary_markers)
-
-        if not segment:
-            return None
-
-        marker_index = next((i for i, norm in enumerate(normalized) if marker_present(norm)), -1)
-
-        skip_keywords = (
-            "adoszam",
-            "addeszam",
-            "tax",
-            "bank",
-            "bankszamla",
-            "iban",
-            "swift",
-            "telefon",
-            "tel",
-            "email",
-            "fax",
-            "kapcsolat",
-            "contact",
-        )
-
-        name = ""
-        address_parts: List[str] = []
-        tax_id = ""
-
-        for raw_line in segment:
-            stripped = raw_line.strip().strip(":")
-            if not stripped:
-                continue
-
-            normalized_line = self._normalize_text(stripped)
-
-            if not tax_id:
-                matches = re.findall(r'[A-Z]{2}\s?\d{6,}|[0-9]{8}-\d-[0-9]{2}|[0-9]{11}', stripped.replace(" ", ""))
-                for match in matches:
-                    normalized_tax = self.normalize_tax_id(match)
-                    if normalized_tax:
-                        tax_id = normalized_tax
-                        break
-
-            if not name and any(term in normalized_line for term in ("adoszam", "addeszam")):
-                company_candidate = self._extract_company_name_from_tax_line(stripped, tax_id)
-                if company_candidate:
-                    name = company_candidate
-
-            if any(keyword in normalized_line for keyword in skip_keywords):
-                continue
-            if not any(ch.isalpha() for ch in stripped):
-                continue
-            if stripped[0].isdigit():
-                address_parts.append(stripped)
-                continue
-
-            if not name:
-                name = stripped
-            else:
-                address_parts.append(stripped)
-
-        result: Dict[str, str] = {}
-        if not name and tax_id:
-            for line in lines:
-                if tax_id in line:
-                    candidate_name = self._extract_company_name_from_tax_line(line, tax_id)
-                    if candidate_name:
-                        name = candidate_name
-                        break
-        if not name and marker_index != -1:
-            company_tokens = ("kft", "zrt", "bt", "nyrt", "kht")
-            for idx in range(marker_index + 1, min(len(lines), marker_index + 8)):
-                line = lines[idx].strip()
-                if not line:
-                    continue
-                norm_line = normalized[idx]
-                if any(token in norm_line for token in company_tokens):
-                    name = line.rstrip(":")
-                    break
-        if not name:
-            for line in lines:
-                norm_line = self._normalize_text(line)
-                if any(token in norm_line for token in ("kft", "zrt", "bt", "nyrt", "kht")) and len(line) <= 80:
-                    name = line.strip().rstrip(":")
-                    break
-        if name:
-            result["name"] = name
-        if address_parts:
-            result["address"] = ', '.join(address_parts)
-        if tax_id:
-            result["tax_id"] = tax_id
-
-        return result if result else None
-
-    def _extract_company_name_from_tax_line(self, line: str, tax_id: Optional[str]) -> Optional[str]:
-        working_line = line
-        if tax_id:
-            for token in {tax_id, tax_id.replace('-', ''), tax_id.replace('-', '').replace('HU', '')}:
-                if token:
-                    working_line = working_line.replace(token, '')
-
-        segments = working_line.split('/')
-        tail = segments[-1].strip(" :-") if segments else working_line
-        if not tail:
-            tail = working_line.strip(" :-")
-        tail = re.sub(r'^[A-Z]{1,3}\b', '', tail).strip()
-
-        company_pattern = re.compile(
-            r'([A-Z0-9][A-Za-z0-9\-\.\u00C0-\u024F\s]{1,80}?(?:KFT\.?|ZRT\.?|BT\.?|KHT\.?|NYRT\.?))',
-            re.IGNORECASE
-        )
-        match = None
-        for candidate in company_pattern.finditer(tail):
-            match = candidate
-        if match:
-            return match.group(1).strip().rstrip(":")
-        return None
-
-    def _locate_anchor_section(
-        self,
-        lines: List[str],
-        normalized_lines: List[str],
-        markers: List[str]
-    ) -> Optional[List[str]]:
-        if not markers:
-            return None
-
-        stop_keywords = (
-            "bank",
-            "bankszamla",
-            "iban",
-            "swift",
-            "telefon",
-            "tel",
-            "email",
-            "fax",
-            "kapcsolat",
-            "contact",
-            "payment",
-            "fizetesi",
-        )
-
-        marker_pairs = [(marker, marker.replace(" ", "")) for marker in markers]
-
-        def contains_marker(normalized_line: str) -> bool:
-            letters_only = re.sub(r'[^a-z]', '', normalized_line)
-            for marker, marker_compact in marker_pairs:
-                if marker in normalized_line or marker_compact in letters_only:
-                    return True
-            return False
-
-        for idx, norm in enumerate(normalized_lines):
-            if contains_marker(norm):
-                collected: List[str] = []
-                current_line = lines[idx]
-
-                # Include immediate previous descriptive line if marker stands alone
-                if ":" not in current_line and idx > 0:
-                    prev = lines[idx - 1].strip()
-                    if prev and not contains_marker(normalized_lines[idx - 1]):
-                        collected.append(prev)
-
-                if ":" in current_line:
-                    before, after = current_line.split(":", 1)
-                    after_colon = after.strip()
-                    if not after_colon and idx > 0:
-                        prev = lines[idx - 1].strip()
-                        if prev and not contains_marker(normalized_lines[idx - 1]):
-                            collected.append(prev)
-                    if after_colon:
-                        collected.append(after_colon)
-
-                j = idx + 1
-                while j < len(lines):
-                    candidate = lines[j].strip()
-                    norm_candidate = normalized_lines[j]
-
-                    if not candidate:
-                        break
-                    if contains_marker(norm_candidate):
-                        break
-                    if any(stop in norm_candidate for stop in stop_keywords):
-                        break
-
-                    collected.append(candidate)
-                    if len(collected) >= 6:
-                        break
-                    j += 1
-
-                collected = [entry for entry in collected if entry]
-                if collected:
-                    return collected
-
-        return None
-
-    def _match_items_to_table_rows(self, items: List[Dict[str, Any]], table_lines: List[str]) -> List[str]:
-        if not items:
-            return []
-        if not table_lines:
-            return [""] * len(items)
-
-        matches: List[str] = []
-        used_indices: set = set()
-
-        for item in items:
-            idx = self._find_best_table_line_index(item, table_lines, used_indices)
-            if idx is None:
-                matches.append("")
-            else:
-                used_indices.add(idx)
-                matches.append(table_lines[idx])
-        return matches
-
-    def _find_best_table_line_index(self, item: Dict[str, Any], table_lines: List[str], used_indices: set) -> Optional[int]:
-        best_idx = None
-        best_score = float('-inf')
-
-        for idx, line in enumerate(table_lines):
-            score = self._score_table_line(item, line)
-            if idx in used_indices:
-                score -= 0.5  # Prefer unused lines but allow reuse
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        if best_idx is None or best_score <= 0:
-            return None
-        return best_idx
-
-    def _score_table_line(self, item: Dict[str, Any], line: str) -> float:
-        if not line:
-            return float('-inf')
-
-        score = 0.0
-        # Extract numbers from line for matching
-        import re
-        line_numbers = [float(m.replace(',', '.')) for m in re.findall(r'\d+[.,]\d+', line)]
-        item_numbers = [abs(num) for num in self._extract_item_numbers(item)]
-
-        match_count = 0
-        for target in item_numbers:
-            if target == 0:
-                continue
-            for num in line_numbers:
-                if abs(num - target) <= 1.0:
-                    match_count += 1
-                    break
-        score += match_count * 5
-
-        line_normalized = self._normalize_text(line)
-        item_tokens = self._extract_name_tokens(item.get('name', ''))
-        if item_tokens:
-            token_hits = sum(1 for token in item_tokens if token in line_normalized)
-            score += token_hits * 1.5
-
-        quantity = item.get('quantity')
-        try:
-            quantity_val = float(str(quantity).replace(',', '.')) if quantity not in (None, '') else None
-        except ValueError:
-            quantity_val = None
-        if quantity_val is not None:
-            if any(abs(num - abs(quantity_val)) <= 0.01 for num in line_numbers):
-                score += 1
-
-        summary_keywords = ('osszesen', 'total', 'subtotal', 'balance', 'due', 'befizetett', 'vegosszeg')
-        if any(keyword in line_normalized for keyword in summary_keywords):
-            score -= 3
-
-        return score
-
-    def _extract_item_numbers(self, item: Dict[str, Any]) -> List[float]:
-        numbers: List[float] = []
-        for key in ('unit_price', 'net', 'gross'):
-            value = item.get(key)
-            if value in (None, ''):
-                continue
-            try:
-                numbers.append(float(str(value).replace(',', '.')))
-            except ValueError:
-                continue
-        return numbers
-
-    def _extract_name_tokens(self, name: str) -> List[str]:
-        if not name:
-            return []
-        normalized = self._normalize_text(name)
-        return [token for token in re.findall(r'[a-z0-9]+', normalized) if len(token) >= 3]
 
     def _normalize_text(self, text: str) -> str:
         if not text:

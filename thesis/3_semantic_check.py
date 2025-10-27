@@ -27,7 +27,7 @@ PROJECT_ROOT = BASE_DIR.parent
 OUTPUT_DIR = PROJECT_ROOT / "thesis_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 GROUND_TRUTH_DEFAULT = PROJECT_ROOT / "thesis_output" / "ground_truth_vision.json"
-INVOICE_DIR = Path("C:/Users/Davide/Downloads/invoice_templates")
+INVOICE_DIR = BASE_DIR / "invoice_templates"
 
 # Configure logging
 logging.basicConfig(
@@ -101,7 +101,7 @@ class SemanticAccuracyTester:
 
         result = {
             'filename': filename,
-            'filepath': invoice_path,
+            'filepath': str(invoice_path),
             'status': 'unknown',
             'total_duration': 0.0,
             'ocr_duration': 0.0,

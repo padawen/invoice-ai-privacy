@@ -1,16 +1,25 @@
 """
-Kategorizes invoices based on quality for thesis testing.
+Step 1: Categorize invoices based on quality for thesis testing.
 
+Categories:
 1. Poor scan quality - low DPI, skewed, blurry
 2. Medium scan quality - readable but some OCR challenges
 3. Good scan quality - clear scanned document
 4. Digital invoice (non-searchable) - clean but image-based PDF
 5. Digital e-invoice (searchable) - born-digital, text-based PDF
+
+Usage:
+    python thesis/1_categorize.py
 """
 
 import os
+import sys
 import json
+import logging
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # Define invoice categories manually after inspection
 CATEGORIES = {
@@ -51,7 +60,7 @@ CATEGORIES = {
 
 def verify_files():
     """Verify all categorized files exist"""
-    invoice_dir = Path("C:/Users/Davide/Downloads/invoice_templates")
+    invoice_dir = Path(__file__).parent / "invoice_templates"
 
     all_files = set()
     for category, data in CATEGORIES.items():
@@ -85,22 +94,35 @@ def save_categories():
 
 def print_summary():
     """Print category summary"""
-    print("\n" + "="*80)
-    print("INVOICE CATEGORIES")
-    print("="*80)
+    logger.info("\n" + "="*80)
+    logger.info("INVOICE CATEGORIES")
+    logger.info("="*80)
 
     for category, data in CATEGORIES.items():
-        print(f"\n{category}:")
-        print(f"  Description: {data['description']}")
-        print(f"  Count: {len(data['invoices'])}")
+        logger.info(f"\n{category}:")
+        logger.info(f"  Description: {data['description']}")
+        logger.info(f"  Count: {len(data['invoices'])}")
         for invoice in data['invoices']:
-            print(f"    - {invoice}")
+            logger.info(f"    - {invoice}")
 
-if __name__ == "__main__":
+
+def main():
+    """Main entry point."""
+    logger.info("="*80)
+    logger.info("STEP 1: CATEGORIZE INVOICES")
+    logger.info("="*80)
+
     print_summary()
 
     if verify_files():
-        print("\nOK - All files verified")
+        logger.info("\nAll files verified")
         save_categories()
+        logger.info("Categories saved successfully")
+        return 0
     else:
-        print("\nERROR - File verification failed - please review categories")
+        logger.error("\nFile verification failed - please review categories")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
