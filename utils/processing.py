@@ -22,6 +22,198 @@ class InvoiceProcessor:
         text = self._normalize_dates(text)
         return text
 
+    def _split_text_by_columns(self, text: str) -> tuple[str, str]:
+        """
+        Split text into left and right columns for seller/buyer separation.
+
+        Uses hybrid approach:
+        1. Try separator-based split (if │ character exists)
+        2. Fallback to label-based extraction (search for SZÁLLÍTÓ/VEVŐ)
+
+        Args:
+            text: Full invoice text with potential two-column layout
+
+        Returns:
+            (left_column_text, right_column_text)
+            Left column typically contains seller, right contains buyer
+        """
+        if not text:
+            return text, ""
+
+        import re
+
+        # Strategy 1: Separator-based split (fast, for native PDFs)
+        # Look for box-drawing characters: │ ┬ ├ ┤
+        if '│' in text or '┬' in text:
+            logger.info("Using separator-based column split (found │ character)")
+            lines = text.split('\n')
+            left_lines = []
+            right_lines = []
+
+            for line in lines:
+                if '│' in line:
+                    parts = line.split('│', 1)  # Split only on first occurrence
+                    left_lines.append(parts[0].strip())
+                    if len(parts) > 1:
+                        right_lines.append(parts[1].strip())
+                elif '┬' in line:
+                    # Header separator line - skip
+                    continue
+                else:
+                    # Line without separator - include in both (likely metadata)
+                    left_lines.append(line)
+
+            left_text = '\n'.join(left_lines).strip()
+            right_text = '\n'.join(right_lines).strip()
+
+            if left_text and right_text:
+                logger.info(f"Separator split successful: left={len(left_text)} chars, right={len(right_text)} chars")
+                return left_text, right_text
+
+        # Strategy 2: Label-based extraction (robust, for all formats)
+        # Find SZÁLLÍTÓ/VEVŐ labels and extract associated sections
+        logger.info("Using label-based column extraction (no separator found)")
+
+        # Find seller section (SZÁLLÍTÓ, Szállító, Seller)
+        seller_patterns = [
+            r'(?:─+\s*)?SZ[ÁA]LL[ÍI]T[ÓO]\s*(?:─+)?',  # SZÁLLÍTÓ with optional separators
+            r'Sz[áa]ll[íi]t[óo]\s*:?',                   # Szállító with optional colon
+            r'Seller\s*:?',                               # English
+        ]
+
+        # Find buyer section (VEVŐ, Vevő, Buyer, Customer)
+        buyer_patterns = [
+            r'(?:─+\s*)?VEV[ŐO]\s*(?:─+)?',             # VEVŐ with optional separators
+            r'Vev[őo]\s*:?',                              # Vevő with optional colon
+            r'Buyer\s*:?',                                # English
+            r'Customer\s*:?',                             # English alt
+        ]
+
+        seller_start = -1
+        buyer_start = -1
+
+        # Find seller start
+        for pattern in seller_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                seller_start = match.end()
+                logger.debug(f"Found seller section at position {seller_start}")
+                break
+
+        # Find buyer start
+        for pattern in buyer_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                buyer_start = match.end()
+                logger.debug(f"Found buyer section at position {buyer_start}")
+                break
+
+        # Extract sections
+        left_text = ""
+        right_text = ""
+
+        if seller_start > 0:
+            # Extract ~300 chars after seller label (enough for name, address, tax ID)
+            seller_end = min(seller_start + 300, len(text))
+            # Or until we hit buyer section
+            if buyer_start > seller_start:
+                seller_end = min(seller_end, buyer_start)
+            left_text = text[seller_start:seller_end].strip()
+
+        if buyer_start > 0:
+            # Extract ~300 chars after buyer label
+            buyer_end = min(buyer_start + 300, len(text))
+            # Stop at next major section (items table, dates, etc.)
+            # Look for section markers
+            next_section_patterns = [
+                r'Cikksz[áa]m',  # Items table
+                r'Sz[áa]mla kelte',  # Invoice date
+                r'T[ée]telek',  # Items summary
+            ]
+            for pattern in next_section_patterns:
+                match = re.search(pattern, text[buyer_start:buyer_end], re.IGNORECASE)
+                if match:
+                    buyer_end = buyer_start + match.start()
+                    break
+            right_text = text[buyer_start:buyer_end].strip()
+
+        if left_text or right_text:
+            logger.info(f"Label-based extraction successful: left={len(left_text)} chars, right={len(right_text)} chars")
+            return left_text, right_text
+
+        # Fallback: return full text for both (no column detection possible)
+        logger.warning("Column split failed - returning full text for both sides")
+        return text, text
+
+    def _extract_items_section(self, text: str) -> str:
+        """
+        Extract only the items table section from text.
+
+        This removes header/footer/metadata to help LLM focus on actual line items.
+        Works for both OCR and native PDF text.
+
+        Args:
+            text: Full invoice text
+
+        Returns:
+            Items section only, or full text if section not found
+        """
+        if not text:
+            return text
+
+        import re
+
+        # Find table start - look for common table headers
+        table_start_patterns = [
+            r'Cikksz[aá]m.*?Megnevez[eé]s',  # Hungarian: Cikkszám Megnevezés
+            r'Megnevez[eé]s.*?Mennyis[eé]g',  # Megnevezés Mennyiség
+            r'Description.*?Quantity',         # English
+            r'Item.*?Qty',                     # English short
+        ]
+
+        start_pos = -1
+        for pattern in table_start_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                start_pos = match.start()
+                logger.debug(f"Found items table start at position {start_pos} with pattern: {pattern}")
+                break
+
+        if start_pos == -1:
+            # No table header found, return full text
+            logger.debug("No items table header found, returning full text")
+            return text
+
+        # Find table end - look for summary/total lines
+        table_end_patterns = [
+            r'T[eé]telek [oö]sszesen',        # Tételek összesen
+            r'[oö]sszesen:',                   # Összesen:
+            r'V[eé]g[oö]sszeg',                # Végösszeg
+            r'Total:',                         # English
+            r'Subtotal:',                      # English
+            r'Fizet[eé]s',                     # Fizetés/Fizetendő
+            r'Azaz:',                          # Azaz: (amount in words)
+        ]
+
+        # Start searching from table start position
+        search_text = text[start_pos:]
+        end_pos = len(text)  # Default: end of text
+
+        for pattern in table_end_patterns:
+            match = re.search(pattern, search_text, re.IGNORECASE)
+            if match:
+                # Found end marker, position is relative to start_pos
+                end_pos = start_pos + match.start()
+                logger.debug(f"Found items table end at position {end_pos} with pattern: {pattern}")
+                break
+
+        # Extract section
+        items_section = text[start_pos:end_pos].strip()
+
+        logger.info(f"Extracted items section: {len(items_section)} chars (from {len(text)} total)")
+
+        return items_section
+
     def _normalize_numeric_tokens(self, text: str) -> str:
         def repl(match: re.Match) -> str:
             token = match.group(0)
@@ -231,35 +423,110 @@ class InvoiceProcessor:
                     return self.get_cancellation_result(filename, job_id)
 
             # Step 2: Process text with LLM (20% - 90%)
-            logger.info("Step 2: LLM structure extraction (chunked strategy)...")
+            logger.info("Step 2: LLM structure extraction (separate entity extraction strategy)...")
             if job_id:
                 progress_tracker.update_progress(job_id, "llm", 25, "Starting LLM processing", "processing")
 
             llm_start = datetime.utcnow()
 
-            # Simplified chunking strategy - trust LLM with good prompts
-            logger.info(f"Extracting invoice data in 2 chunks (simplified pipeline)")
+            # New 4-chunk strategy - separate seller, buyer, metadata, items
+            logger.info(f"Extracting invoice data in 4 chunks (separate seller/buyer extraction)")
 
-            # Chunk 1: Extract metadata
-            if job_id:
-                progress_tracker.update_progress(job_id, "llm", 30, "Extracting metadata", "processing")
-
-            # Get structured OCR text for metadata (preserve columns for layout)
+            # UNIVERSAL SPATIAL COLUMN DETECTION for all PDFs
             if not use_native_text or structured_text_metadata is None:
-                structured_text_metadata = self.ocr_processor.extract_text_from_pdf(pdf_bytes, job_id, preserve_columns=True)
+                # OCR PATH: Use Tesseract bbox-based column detection
+                logger.info("Using Tesseract bbox-based column detection (OCR path)")
+                left_column_text, right_column_text, structured_text_metadata = self.ocr_processor.extract_text_with_columns(pdf_bytes, job_id)
+                left_column_text = self._prepare_text_for_llm(left_column_text)
+                right_column_text = self._prepare_text_for_llm(right_column_text)
                 structured_text_metadata = self._prepare_text_for_llm(structured_text_metadata)
-                logger.info(f"Using structured OCR for metadata extraction ({len(structured_text_metadata)} chars)")
+                logger.info(f"OCR spatial split: left={len(left_column_text)} chars (seller), right={len(right_column_text)} chars (buyer), full={len(structured_text_metadata)} chars")
             else:
-                logger.info(f"Using native PDF text for metadata extraction ({len(structured_text_metadata)} chars)")
+                # NATIVE PDF PATH: Use PyMuPDF bbox-based column detection
+                logger.info("Using PyMuPDF bbox-based column detection (native text path)")
+                left_column_text, right_column_text, structured_text_metadata = self.ocr_processor.extract_text_with_columns_native(pdf_bytes, job_id)
+                left_column_text = self._prepare_text_for_llm(left_column_text)
+                right_column_text = self._prepare_text_for_llm(right_column_text)
+                structured_text_metadata = self._prepare_text_for_llm(structured_text_metadata)
+                logger.info(f"Native spatial split: left={len(left_column_text)} chars (seller), right={len(right_column_text)} chars (buyer), full={len(structured_text_metadata)} chars")
+
+            # Chunk 1: Extract seller (25% -> 35%)
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 30, "Extracting seller information", "processing")
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during seller extraction")
+                    return self.get_cancellation_result(filename, job_id)
+
+            # Use LEFT column for seller extraction (seller is always on the left)
+            seller_prompt = self.llm_client.create_extraction_prompt(left_column_text, "seller")
+            seller_data = self.llm_client.generate_completion(seller_prompt, job_id)
+            logger.info(f"Seller extraction completed: {seller_data.get('seller', {}).get('name', 'N/A')}")
+
+            # Chunk 2: Extract buyer (35% -> 45%)
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 40, "Extracting buyer information", "processing")
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during buyer extraction")
+                    return self.get_cancellation_result(filename, job_id)
+
+            # Use RIGHT column for buyer extraction (buyer is always on the right)
+            buyer_prompt = self.llm_client.create_extraction_prompt(right_column_text, "buyer")
+            buyer_data = self.llm_client.generate_completion(buyer_prompt, job_id)
+
+            # Fallback: If buyer extraction failed (returns just label or empty), retry with full text
+            buyer_name = buyer_data.get('buyer', {}).get('name', '').strip()
+            is_label_only = buyer_name.upper() in ['VEVŐ', 'VEVO', 'BUYER', 'CUSTOMER', 'VEV6', 'VÁSÁRLÓ', 'MEGRENDELŐ']
+            is_empty = not buyer_name or len(buyer_name) < 5
+
+            if is_label_only or is_empty:
+                logger.warning(f"⚠️  Buyer extraction failed from right column (got: '{buyer_name}'), retrying with full text")
+                buyer_prompt_fallback = self.llm_client.create_extraction_prompt(structured_text_metadata, "buyer")
+                buyer_data_fallback = self.llm_client.generate_completion(buyer_prompt_fallback, job_id)
+
+                # Validate fallback result before using it
+                fallback_name = buyer_data_fallback.get('buyer', {}).get('name', '').strip()
+                is_fallback_valid = (
+                    fallback_name and
+                    len(fallback_name) >= 5 and
+                    fallback_name.upper() not in ['VEVŐ', 'VEVO', 'BUYER', 'CUSTOMER', 'VEV6']
+                )
+
+                if is_fallback_valid:
+                    buyer_data = buyer_data_fallback
+                    logger.info(f"✓ Fallback buyer extraction succeeded: {fallback_name}")
+                else:
+                    logger.warning(f"✗ Fallback also failed: {fallback_name}")
+
+            logger.info(f"Buyer extraction completed: {buyer_data.get('buyer', {}).get('name', 'N/A')}")
+
+            # Chunk 3: Extract invoice metadata (dates, numbers) (45% -> 55%)
+            if job_id:
+                progress_tracker.update_progress(job_id, "llm", 50, "Extracting invoice metadata", "processing")
+                if progress_tracker.is_cancelled(job_id):
+                    logger.info(f"Job {job_id} was cancelled during metadata extraction")
+                    return self.get_cancellation_result(filename, job_id)
 
             metadata_prompt = self.llm_client.create_extraction_prompt(structured_text_metadata, "metadata")
-            metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
+            invoice_metadata = self.llm_client.generate_completion(metadata_prompt, job_id)
+            logger.info(f"Invoice metadata extraction completed: {invoice_metadata.get('invoice_number', 'N/A')}")
 
-            # Chunk 2: Extract line items
+            # Merge seller, buyer, and metadata into single dict
+            metadata = {
+                "seller": seller_data.get("seller", {}),
+                "buyer": buyer_data.get("buyer", {}),
+                "invoice_number": invoice_metadata.get("invoice_number", ""),
+                "issue_date": invoice_metadata.get("issue_date", ""),
+                "fulfillment_date": invoice_metadata.get("fulfillment_date", ""),
+                "due_date": invoice_metadata.get("due_date", ""),
+                "payment_method": invoice_metadata.get("payment_method", ""),
+                "currency": invoice_metadata.get("currency", "")
+            }
+
+            # Chunk 4: Extract line items (55% -> 90%)
             if job_id:
                 progress_tracker.update_progress(job_id, "llm", 60, "Extracting line items", "processing")
                 if progress_tracker.is_cancelled(job_id):
-                    logger.info(f"Job {job_id} was cancelled during chunked processing")
+                    logger.info(f"Job {job_id} was cancelled during items extraction")
                     return self.get_cancellation_result(filename, job_id)
 
             # Use structured OCR for items - hybrid approach: try preserve_columns=True first
@@ -271,6 +538,11 @@ class InvoiceProcessor:
                 logger.info(f"Using structured OCR for items extraction with preserve_columns=True ({len(structured_text_for_items)} chars)")
             else:
                 logger.info(f"Using native PDF text for item extraction ({len(structured_text_for_items)} chars)")
+                # CRITICAL FIX: Extract only items section from native text
+                # Native text contains full document (seller, buyer, headers, footers)
+                # which confuses LLM - we need to isolate the items table
+                structured_text_for_items = self._extract_items_section(structured_text_for_items)
+                logger.info(f"After items section extraction: {len(structured_text_for_items)} chars")
 
             items_prompt = self.llm_client.create_extraction_prompt(structured_text_for_items, "items")
             items_data = self.llm_client.generate_completion(items_prompt, job_id, expect_array=False)
