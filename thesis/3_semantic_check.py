@@ -452,6 +452,57 @@ class SemanticAccuracyTester:
                 return True
         return False
 
+    def _containment_check(self, extracted: str, expected: str) -> bool:
+        """Check if expected value is contained in extracted value or vice versa"""
+        ext_norm = self._normalize_text(extracted)
+        exp_norm = self._normalize_text(expected)
+        # Check if either is contained in the other
+        return exp_norm in ext_norm or ext_norm in exp_norm
+
+    def _address_tokens_match(self, extracted: str, expected: str, threshold: float = 0.7) -> bool:
+        """Check if address tokens match (order-independent)"""
+        import re
+
+        # Normalize both addresses
+        ext_norm = self._normalize_text(extracted)
+        exp_norm = self._normalize_text(expected)
+
+        # Extract tokens (words and numbers)
+        ext_tokens = set(re.findall(r'\w+', ext_norm))
+        exp_tokens = set(re.findall(r'\w+', exp_norm))
+
+        if not ext_tokens or not exp_tokens:
+            return False
+
+        # Jaccard similarity: intersection / union
+        intersection = len(ext_tokens & exp_tokens)
+        union = len(ext_tokens | exp_tokens)
+        similarity = intersection / union if union > 0 else 0
+
+        return similarity >= threshold
+
+    def _token_sets_match(self, extracted: str, expected: str, threshold: float = 0.75) -> bool:
+        """Check if token sets match (for company names, person names)"""
+        import re
+
+        # Normalize
+        ext_norm = self._normalize_text(extracted)
+        exp_norm = self._normalize_text(expected)
+
+        # Extract word tokens
+        ext_tokens = set(re.findall(r'\w+', ext_norm))
+        exp_tokens = set(re.findall(r'\w+', exp_norm))
+
+        if not ext_tokens or not exp_tokens:
+            return False
+
+        # Calculate Jaccard similarity
+        intersection = len(ext_tokens & exp_tokens)
+        union = len(ext_tokens | exp_tokens)
+        similarity = intersection / union if union > 0 else 0
+
+        return similarity >= threshold
+
     def _values_match(self, extracted: str, expected: str, field: Optional[str] = None) -> bool:
         """Check if two text values match (with normalization and field-specific rules)"""
         extracted_str = "" if extracted is None else str(extracted).strip()
@@ -462,11 +513,22 @@ class SemanticAccuracyTester:
         if not extracted_str or not expected_str:
             return False
 
+        # Exact match (before normalization)
+        if extracted_str == expected_str:
+            return True
+
+        # Date normalization
         if field in {'issue_date', 'fulfillment_date', 'due_date'}:
             return self._normalize_date(extracted_str) == self._normalize_date(expected_str)
 
+        # Phone normalization
         if field == 'phone':
             return self._normalize_phone(extracted_str) == self._normalize_phone(expected_str)
+
+        # Containment check for email and tax_id (handles "email1, email2" containing "email1")
+        if field in {'email', 'tax_id'}:
+            if self._containment_check(extracted_str, expected_str):
+                return True
 
         ext_norm = self._normalize_text(extracted_str)
         exp_norm = self._normalize_text(expected_str)
@@ -475,11 +537,20 @@ class SemanticAccuracyTester:
         if ext_norm == exp_norm:
             return True
 
-        # For addresses and names, allow partial matches
-        # (OCR may miss accents or have slight variations)
+        # Address token matching (handles different ordering like "2100 Gödöllő, Hunyadi utca 20" vs "Hunyadi utca 20, 2100 Gödöllő")
+        if field == 'address':
+            if self._address_tokens_match(extracted_str, expected_str):
+                return True
+
+        # Name/company token matching (handles "3D Infotech Kft." vs "Infotech Kft. 3D")
+        if field == 'name':
+            if self._token_sets_match(extracted_str, expected_str):
+                return True
+
+        # Fallback: SequenceMatcher with 85% similarity threshold
         from difflib import SequenceMatcher
         similarity = SequenceMatcher(None, ext_norm, exp_norm).ratio()
-        return similarity >= 0.85  # 85% similarity threshold
+        return similarity >= 0.85
 
     def _numbers_match(self, extracted: str, expected: str, tolerance: float = 0.01) -> bool:
         """Check if two numeric values match (with tolerance)"""
@@ -523,6 +594,11 @@ class SemanticAccuracyTester:
             return ""
 
         value = str(value).strip()
+
+        # Pre-process: remove spaces around separators (handles "2024. 03. 05.")
+        import re
+        value = re.sub(r'\s*([./-])\s*', r'\1', value)
+
         formats = [
             "%Y.%m.%d",
             "%Y-%m-%d",
@@ -544,7 +620,7 @@ class SemanticAccuracyTester:
         normalized = value.replace('.', '-').replace('/', '-').replace(' ', '-')
         while '--' in normalized:
             normalized = normalized.replace('--', '-')
-        return normalized
+        return normalized.strip('-')
 
     def _normalize_phone(self, value: str) -> str:
         import re

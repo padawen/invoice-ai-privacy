@@ -130,7 +130,7 @@ def aggregate_by_category(semantic_results: dict, categories: dict) -> Dict:
 
 def export_to_csv(aggregated_results: Dict, semantic_results: dict, categories: dict, output_file: Path):
     """Export aggregated results to CSV with three sections: overall, category summary, and details."""
-    with open(output_file, 'w', newline='', encoding='utf-8') as f:
+    with open(output_file, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f, delimiter=';')
 
         # SECTION 0: Overall Summary

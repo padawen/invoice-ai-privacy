@@ -339,6 +339,34 @@ class InvoiceProcessor:
             return None
 
         joined_text = "\n\n=== PAGE BREAK ===\n\n".join(texts)
+
+        # Check text quality to avoid using corrupted OCR embedded in PDFs
+        # Calculate garbage and clean character ratios
+        garbage_chars = len(re.findall(r'[\^\$\*\\\{\}\[\]@#~`]', joined_text))
+        clean_chars = len(re.findall(r'[a-zA-Z0-9áéíóöőúüűÁÉÍÓÖŐÚÜŰ]', joined_text))
+        total_chars = len(joined_text.strip())
+
+        # Detect digit substitution (numbers replacing accented characters)
+        # Count words that mix letters and digits (e.g., "Felel6ss6gtl", "V5rmegyei")
+        words = re.findall(r'\b\w+\b', joined_text)
+        mixed_words = [w for w in words if re.search(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]', w) and re.search(r'\d', w)]
+        digit_substitution_ratio = len(mixed_words) / len(words) if len(words) > 0 else 0
+
+        if total_chars > 0:
+            garbage_ratio = garbage_chars / total_chars
+            clean_ratio = clean_chars / total_chars
+
+            # If text quality is poor (corrupted OCR), force fallback to OCR
+            # This prevents using garbage text that passes character count threshold
+            if garbage_ratio >= 0.02 or clean_ratio < 0.50 or digit_substitution_ratio > 0.15:
+                logger.info(
+                    "Native text quality is poor (garbage=%.4f, clean=%.4f, digit_subst=%.4f). Falling back to OCR.",
+                    garbage_ratio,
+                    clean_ratio,
+                    digit_substitution_ratio
+                )
+                return None
+
         duration = (datetime.utcnow() - start_time).total_seconds()
         density = non_space_chars / max(len(pdf_bytes), 1)
 

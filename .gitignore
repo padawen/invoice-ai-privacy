@@ -67,7 +67,7 @@ uploads/
 # Claude Code artefacts
 .claude/
 
-# Thesis outputs (generated artefacts)
+# Thesis outputs (generated artefacts - contains sensitive data like PDF filenames)
 thesis_output/
 
 # Excel exports
